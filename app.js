@@ -106,6 +106,7 @@ let lastAlbumArtUrl = '';
 let nowPlayingFlipInterval = null;
 let nowPlayingCurrentLine = 0;
 let isSliderDragging = false;
+let isScreensaverOnlyMode = false; // ?screensaver=true: no room, so no voice messages either
 const forecastCache = {};
 const WEATHER_ICONS = {
     'clear-night': 'nightlight',
@@ -2386,11 +2387,21 @@ function formatClockTime(date, formatOverride) {
     return `${hours}:${minutes}`;
 }
 
+// Runs every second, so only touch the DOM when a value actually changed
+// (rewriting text or styles forces style and layout work on the panel).
+function setTextIfChanged(element, text) {
+    if (element.textContent !== text) element.textContent = text;
+}
+
+function setDisplayIfChanged(element, display) {
+    if (element.style.display !== display) element.style.display = display;
+}
+
 function updateScreensaverClock() {
     const now = new Date();
 
     // Time
-    document.getElementById('screensaverTime').textContent = formatClockTime(now);
+    setTextIfChanged(document.getElementById('screensaverTime'), formatClockTime(now));
 
     // Date
     const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -2398,15 +2409,15 @@ function updateScreensaverClock() {
     const dayName = days[now.getDay()];
     const monthName = months[now.getMonth()];
     const date = now.getDate();
-    document.getElementById('screensaverDate').textContent = `${dayName}, ${monthName} ${date}`;
+    setTextIfChanged(document.getElementById('screensaverDate'), `${dayName}, ${monthName} ${date}`);
     
     // Room name (hide in standalone screensaver mode)
     const roomElement = document.getElementById('screensaverRoom');
     if (config.roomName === 'Screensaver') {
-        roomElement.style.display = 'none';
+        setDisplayIfChanged(roomElement, 'none');
     } else {
-        roomElement.textContent = config.roomName;
-        roomElement.style.display = 'block';
+        setTextIfChanged(roomElement, config.roomName);
+        setDisplayIfChanged(roomElement, 'block');
     }
     
     // Temperature
@@ -2418,20 +2429,20 @@ function updateScreensaverClock() {
         if (domain === 'climate' && state.attributes.current_temperature !== undefined) {
             const temp = Math.round(state.attributes.current_temperature);
             const unit = state.attributes.unit_of_measurement || '°C';
-            tempElement.textContent = `${temp}${unit}`;
-            tempElement.style.display = 'block';
+            setTextIfChanged(tempElement, `${temp}${unit}`);
+            setDisplayIfChanged(tempElement, 'block');
         } else if (domain === 'sensor') {
             const value = parseFloat(state.state);
             if (!isNaN(value)) {
                 const unit = state.attributes.unit_of_measurement || '°C';
-                tempElement.textContent = `${Math.round(value)}${unit}`;
-                tempElement.style.display = 'block';
+                setTextIfChanged(tempElement, `${Math.round(value)}${unit}`);
+                setDisplayIfChanged(tempElement, 'block');
             }
         } else {
-            tempElement.style.display = 'none';
+            setDisplayIfChanged(tempElement, 'none');
         }
     } else {
-        tempElement.style.display = 'none';
+        setDisplayIfChanged(tempElement, 'none');
     }
     
     // Weather
@@ -2443,19 +2454,19 @@ function updateScreensaverClock() {
     if (config.screensaverWeather && entityStates[config.screensaverWeather]) {
         const weatherState = entityStates[config.screensaverWeather];
         
-        weatherIcon.textContent = WEATHER_ICONS[weatherState.state] || 'cloud';
+        setTextIfChanged(weatherIcon, WEATHER_ICONS[weatherState.state] || 'cloud');
         
         // Show weather temperature
         if (weatherState.attributes.temperature !== undefined) {
             const temp = Math.round(weatherState.attributes.temperature);
             const unit = weatherState.attributes.temperature_unit || '°C';
-            weatherTemp.textContent = `${temp}${unit}`;
+            setTextIfChanged(weatherTemp, `${temp}${unit}`);
         }
         
-        weatherCondition.textContent = formatWeatherCondition(weatherState.state);
-        weatherElement.style.display = 'flex';
+        setTextIfChanged(weatherCondition, formatWeatherCondition(weatherState.state));
+        setDisplayIfChanged(weatherElement, 'flex');
     } else {
-        weatherElement.style.display = 'none';
+        setDisplayIfChanged(weatherElement, 'none');
     }
 }
 
@@ -3813,6 +3824,7 @@ async function init() {
     }
     
     if (isScreensaverMode) {
+        isScreensaverOnlyMode = true;
         // Screensaver-only mode - works without room config
         document.querySelector('.container').style.display = 'none';
         
@@ -4391,7 +4403,7 @@ function formatMessageTime(timestamp) {
 
 // Check for new messages periodically
 setInterval(async () => {
-    if (config && config.roomName) {
+    if (config && config.roomName && !isScreensaverOnlyMode) {
         await loadVoiceMessages();
         
         // Auto-play unread messages
