@@ -63,7 +63,8 @@ body {
     top: 20px;
     left: 50%;
     transform: translateX(-50%) translateY(-100px);
-    background: rgba(0, 0, 0, 0.9);
+    /* Solid tint, not backdrop-filter: a live blur is too slow on the panels */
+    background: rgba(0, 0, 0, 0.94);
     color: #fff;
     padding: 12px 20px;
     border-radius: 12px;
@@ -74,7 +75,6 @@ body {
     transition: all 0.3s ease;
     max-width: 90%;
     text-align: center;
-    backdrop-filter: blur(10px);
     border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
@@ -130,7 +130,6 @@ body {
     top: 0;
     left: 50%;
     transform: translateX(-50%);
-    backdrop-filter: blur(10px);
     z-index: 10;
     flex-shrink: 0;
 }
@@ -333,7 +332,6 @@ body {
     touch-action: manipulation;
     position: relative;
     overflow: hidden;
-    backdrop-filter: blur(10px);
     min-height: 0;
     grid-row: span 2;
 }
@@ -1433,8 +1431,8 @@ body {
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.85);
-    backdrop-filter: blur(8px);
+    /* Denser dim instead of blurring the dashboard behind it */
+    background: rgba(0, 0, 0, 0.9);
     z-index: 2000;
     align-items: center;
     justify-content: center;

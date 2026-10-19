@@ -95,7 +95,6 @@ let config = null;
 let globalConfig = null;
 let roomConfigs = [];
 let entityStates = {};
-let pollInterval = null;
 let isConnected = false;
 let currentPage = 0;
 let touchStartX = 0;
@@ -297,22 +296,16 @@ async function callHA(endpoint, method = 'GET', body = null) {
     return response.json();
 }
 
-async function getStates() {
+// Cheap check that the URL and token work: GET /api/ answers {"message": "API running."}
+async function testHAConnection() {
     try {
-        const states = await callHA('states');
-        const stateMap = {};
-        
-        states.forEach(state => {
-            stateMap[state.entity_id] = state;
-        });
-
-        entityStates = stateMap;
+        await callHA('');
         updateConnectionStatus(true);
-        return stateMap;
+        return true;
     } catch (error) {
-        console.error('Failed to get states:', error);
+        console.error('Failed to reach Home Assistant:', error);
         updateConnectionStatus(false);
-        return null;
+        return false;
     }
 }
 
@@ -321,7 +314,7 @@ async function callService(domain, service, entityId) {
         await callHA(`services/${domain}/${service}`, 'POST', {
             entity_id: entityId
         });
-        setTimeout(() => getStates().then(renderPages), 100);
+        refreshStatesSoon(100);
     } catch (error) {
         console.error('Service call failed:', error);
         showError('Failed to control device');
@@ -329,14 +322,380 @@ async function callService(domain, service, entityId) {
 }
 
 // ============================================
+// LIVE STATE
+// ============================================
+// Live state comes over Home Assistant's WebSocket API (through this origin's
+// /api/ proxy), subscribed to only the entities this page shows, so HA pushes
+// a few hundred bytes per change instead of the panel downloading and parsing
+// every entity in HA (~1 MB on a big install) on a timer. While the socket is
+// down, the same entities are polled one by one over REST every 10 s.
+// Everything stops while the page is hidden.
+const FALLBACK_POLL_MS = 10000;
+const SOCKET_PING_MS = 20000; // keep under nginx's 30 s proxy_read_timeout on older configs
+const NON_HA_DOMAINS = ['clock', 'assistant_command', 'spotify_playlist'];
+// Same rule HA uses; subscribe_entities rejects the whole list if one id is malformed.
+const VALID_ENTITY_ID = /^(?!.+__)(?!_)[\da-z_]+(?<!_)\.(?!_)[\da-z_]+(?<!_)$/;
+
+let liveStatesStarted = false;
+let watchedEntityIds = [];
+let haSocket = null;
+let haSocketLive = false;      // authenticated, subscribed and first snapshot applied
+let haMsgId = 0;
+let haSubscriptionId = null;
+let haRetryMs = 1000;
+let haRetryTimer = null;
+let haPingTimer = null;
+let haPongTimer = null;
+let fallbackPollTimer = null;
+let pollInFlight = null;       // the id list being polled right now
+
+// Entities that need live state: the room's tiles, the header temperature and the screensaver.
+function getWatchedEntityIds() {
+    const ids = (config.entities || [])
+        .map(e => e.id)
+        .filter(id => !NON_HA_DOMAINS.includes(id.split('.')[0]));
+    if (config.headerTempEntity) ids.push(config.headerTempEntity);
+    if (config.screensaverWeather) ids.push(config.screensaverWeather);
+    return [...new Set(ids)].filter(id => VALID_ENTITY_ID.test(id));
+}
+
+// (Re)starts live state for the current config. Resolves false if Home Assistant can't be reached.
+async function startLiveStates() {
+    closeSocket();
+    stopFallbackPoll();
+    clearTimeout(haRetryTimer);
+    haRetryMs = 1000;
+    liveStatesStarted = true;
+    watchedEntityIds = getWatchedEntityIds();
+    pagesRendered = false;
+
+    const ok = await pollWatchedStates();
+    connectSocket(); // keeps retrying (with the fallback poll) if HA is down right now
+    return ok;
+}
+
+// Stores a state and returns whether anything a tile shows changed.
+function setEntityState(entityId, next) {
+    const prev = entityStates[entityId];
+    entityStates[entityId] = next;
+    return !prev || prev.state !== next.state ||
+        JSON.stringify(prev.attributes) !== JSON.stringify(next.attributes);
+}
+
+async function fetchEntityState(entityId) {
+    const response = await fetch(`/api/states/${encodeURIComponent(entityId)}`, {
+        headers: { 'Authorization': `Bearer ${globalConfig.haToken}` }
+    });
+    if (response.status === 404) return null; // no such entity in HA
+    if (!response.ok) throw new Error(`HA API error: ${response.status}`);
+    return response.json();
+}
+
+// Reads the watched entities over REST, one small request each. Returns false
+// if Home Assistant couldn't be reached at all.
+async function pollWatchedStates() {
+    if (!globalConfig || !globalConfig.haToken) return false;
+    const ids = watchedEntityIds;
+    if (!ids.length || pollInFlight === ids) return true;
+
+    pollInFlight = ids;
+    let results;
+    try {
+        results = await Promise.all(ids.map(id => fetchEntityState(id).then(
+            state => ({ state }),
+            error => ({ error })
+        )));
+    } finally {
+        if (pollInFlight === ids) pollInFlight = null;
+    }
+
+    if (results.every(r => r.error)) {
+        console.error('Failed to get states:', results[0].error);
+        updateConnectionStatus(false);
+        return false;
+    }
+    updateConnectionStatus(true);
+    // The socket came up meanwhile; its snapshot is newer than these responses.
+    if (haSocketLive || ids !== watchedEntityIds) return true;
+
+    const changed = new Set();
+    results.forEach(({ state, error }, i) => {
+        if (error) return;
+        const id = ids[i];
+        if (state) {
+            if (setEntityState(id, state)) changed.add(id);
+        } else if (entityStates[id]) {
+            delete entityStates[id];
+            changed.add(id);
+        }
+    });
+    if (changed.size) onEntitiesChanged(changed);
+    return true;
+}
+
+// After a service call: the socket pushes the new state by itself, so only
+// re-read the entities when it's down.
+function refreshStatesSoon(delay = 500) {
+    if (haSocketLive) return;
+    setTimeout(pollWatchedStates, delay);
+}
+
+function connectSocket() {
+    closeSocket();
+    clearTimeout(haRetryTimer);
+    // An empty entity_ids list would subscribe to every entity in HA.
+    if (!globalConfig || !globalConfig.haToken || !watchedEntityIds.length || document.hidden) return;
+
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    let ws;
+    try {
+        ws = new WebSocket(`${protocol}//${location.host}/api/websocket`);
+    } catch (error) {
+        console.error('WebSocket failed:', error);
+        socketDown();
+        return;
+    }
+    haSocket = ws;
+    ws.onmessage = (event) => {
+        let msg;
+        try { msg = JSON.parse(event.data); } catch (e) { return; }
+        handleSocketMessage(msg);
+    };
+    ws.onclose = () => { if (haSocket === ws) socketDown(); };
+}
+
+function sendSocketMessage(msg) {
+    msg.id = ++haMsgId;
+    haSocket.send(JSON.stringify(msg));
+    return msg.id;
+}
+
+function handleSocketMessage(msg) {
+    switch (msg.type) {
+        case 'auth_required':
+            haSocket.send(JSON.stringify({ type: 'auth', access_token: globalConfig.haToken }));
+            break;
+        case 'auth_ok':
+            haSubscriptionId = sendSocketMessage({ type: 'subscribe_entities', entity_ids: watchedEntityIds });
+            break;
+        case 'auth_invalid':
+            console.error('Home Assistant rejected the token:', msg.message);
+            socketDown();
+            break;
+        case 'result':
+            if (msg.id === haSubscriptionId && !msg.success) {
+                console.error('subscribe_entities failed:', msg.error);
+                socketDown();
+            }
+            break;
+        case 'pong':
+            clearTimeout(haPongTimer);
+            break;
+        case 'event':
+            if (msg.id === haSubscriptionId) applyEntityEvent(msg.event);
+            break;
+    }
+}
+
+// subscribe_entities sends compressed states: `a` = full states (the first
+// event, and entities that show up later), `c` = diffs ('+' changed fields,
+// '-' removed attributes), `r` = removed entities.
+function applyEntityEvent(event) {
+    const changed = new Set();
+    const added = event.a || {};
+
+    for (const id of Object.keys(added)) {
+        const s = added[id];
+        if (setEntityState(id, { entity_id: id, state: s.s, attributes: s.a || {} })) changed.add(id);
+    }
+    for (const id of Object.keys(event.c || {})) {
+        const current = entityStates[id];
+        if (!current) continue;
+        const plus = event.c[id]['+'] || {};
+        const minus = (event.c[id]['-'] && event.c[id]['-'].a) || [];
+        if (!('s' in plus) && !plus.a && !minus.length) continue; // only timestamps/context changed
+        const attributes = { ...current.attributes, ...(plus.a || {}) };
+        minus.forEach(key => delete attributes[key]);
+        entityStates[id] = { ...current, state: 's' in plus ? plus.s : current.state, attributes };
+        changed.add(id);
+    }
+    for (const id of event.r || []) {
+        if (!entityStates[id]) continue;
+        delete entityStates[id];
+        changed.add(id);
+    }
+
+    if (!haSocketLive) {
+        // First event is the full snapshot: anything missing from it is gone from HA.
+        for (const id of watchedEntityIds) {
+            if (!(id in added) && entityStates[id]) {
+                delete entityStates[id];
+                changed.add(id);
+            }
+        }
+        haSocketLive = true;
+        haRetryMs = 1000;
+        stopFallbackPoll();
+        startSocketPing();
+        updateConnectionStatus(true);
+    }
+    if (changed.size) onEntitiesChanged(changed);
+}
+
+// Pings keep idle proxies from closing the socket and catch dead ones (common
+// after the screen has been off), which are then reconnected.
+function startSocketPing() {
+    clearInterval(haPingTimer);
+    haPingTimer = setInterval(() => {
+        if (!haSocket || haSocket.readyState !== WebSocket.OPEN) {
+            socketDown();
+            return;
+        }
+        sendSocketMessage({ type: 'ping' });
+        clearTimeout(haPongTimer);
+        haPongTimer = setTimeout(socketDown, 10000);
+    }, SOCKET_PING_MS);
+}
+
+function socketDown() {
+    closeSocket();
+    if (document.hidden || !watchedEntityIds.length) return;
+    startFallbackPoll();
+    clearTimeout(haRetryTimer);
+    haRetryTimer = setTimeout(connectSocket, haRetryMs);
+    haRetryMs = Math.min(haRetryMs * 2, 30000);
+}
+
+function closeSocket() {
+    clearInterval(haPingTimer);
+    clearTimeout(haPongTimer);
+    haSocketLive = false;
+    haSubscriptionId = null;
+    if (haSocket) {
+        const ws = haSocket;
+        haSocket = null;
+        ws.onclose = ws.onmessage = null;
+        try { ws.close(); } catch (e) { /* already closed */ }
+    }
+}
+
+function startFallbackPoll() {
+    if (fallbackPollTimer || document.hidden) return;
+    fallbackPollTimer = setInterval(pollWatchedStates, FALLBACK_POLL_MS);
+}
+
+function stopFallbackPoll() {
+    clearInterval(fallbackPollTimer);
+    fallbackPollTimer = null;
+}
+
+function pauseLiveStates() {
+    closeSocket();
+    stopFallbackPoll();
+    clearTimeout(haRetryTimer);
+    clearTimeout(clockTileTimer);
+}
+
+function resumeLiveStates() {
+    if (!liveStatesStarted) return;
+    flushPendingRenders();
+    updateClockTiles();
+    haRetryMs = 1000;
+    if (!haSocket) connectSocket();
+}
+
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) pauseLiveStates();
+    else resumeLiveStates();
+});
+
+// A cancelled touch never reaches the slider's touchend, so release the render hold here.
+document.addEventListener('touchcancel', () => {
+    if (isSliderDragging) endSliderDrag();
+}, true);
+
+// ============================================
 // UI RENDERING
 // ============================================
+// renderPages() builds every page once; after that, state changes only
+// replace the tiles (and header, media page, open modal) that show the
+// changed entities.
+let pagesRendered = false;
+let renderedTiles = new Map(); // entity id -> [{ entity, tile }]
+let pendingRenderIds = new Set();
+let clockTileTimer = null;
+
+function onEntitiesChanged(changedIds) {
+    changedIds.forEach(id => pendingRenderIds.add(id));
+    // Don't re-render while a slider is being dragged; endSliderDrag() catches up.
+    if (isSliderDragging || document.hidden) return;
+    flushPendingRenders();
+}
+
+function flushPendingRenders() {
+    if (!pendingRenderIds.size || isSliderDragging) return;
+    const ids = pendingRenderIds;
+    pendingRenderIds = new Set();
+
+    if (document.getElementById('screensaver').classList.contains('active')) {
+        updateScreensaverClock();
+    }
+    if (!pagesRendered) return;
+
+    ids.forEach(rerenderTiles);
+    if (config.headerTempEntity && ids.has(config.headerTempEntity)) updateHeaderTemp();
+    if ([...ids].some(id => id.startsWith('media_player.'))) rerenderMediaPage();
+    if (currentClimateEntity && ids.has(currentClimateEntity)) openClimateModal(currentClimateEntity);
+}
+
+function rerenderTiles(entityId) {
+    (renderedTiles.get(entityId) || []).forEach(ref => {
+        const tile = createTile(ref.entity, entityStates[entityId]);
+        applyTileSize(tile, ref.entity);
+        ref.tile.replaceWith(tile);
+        ref.tile = tile;
+    });
+}
+
+function rerenderMediaPage() {
+    const mediaPlayers = config.entities.filter(e => e.id.startsWith('media_player.'));
+    const oldPage = document.querySelector('#pagesWrapper .media-player-page');
+    if (oldPage && mediaPlayers.length) oldPage.replaceWith(createMediaPlayerPage(mediaPlayers));
+    updateNowPlayingIndicator(mediaPlayers);
+}
+
+// Clock tiles show hours and minutes, so redraw them on each minute boundary.
+function getClockTileIds() {
+    return [...renderedTiles.keys()].filter(id => id.startsWith('clock.'));
+}
+
+function updateClockTiles() {
+    getClockTileIds().forEach(rerenderTiles);
+    scheduleClockTiles();
+}
+
+function scheduleClockTiles() {
+    clearTimeout(clockTileTimer);
+    if (!pagesRendered || document.hidden || !getClockTileIds().length) return;
+    clockTileTimer = setTimeout(updateClockTiles, 60000 - Date.now() % 60000 + 50);
+}
+
+function endSliderDrag() {
+    isSliderDragging = false;
+    // Give HA a moment to push the value the slider just set, so the tile
+    // doesn't flash back to the old one first.
+    if (pendingRenderIds.size) setTimeout(flushPendingRenders, 1000);
+}
+
 function renderPages() {
     document.getElementById('loadingOverlay').classList.add('hidden');
     const wrapper = document.getElementById('pagesWrapper');
     const dotsContainer = document.getElementById('pageDots');
     wrapper.innerHTML = '';
     dotsContainer.innerHTML = '';
+    renderedTiles = new Map();
+    pendingRenderIds = new Set();
+    pagesRendered = true;
 
     // Filter out media players from regular entities
     const regularEntities = config.entities.filter(e => !e.id.startsWith('media_player.'));
@@ -394,6 +753,8 @@ function renderPages() {
             const tile = createTile(entity, state);
             applyTileSize(tile, entity);
             grid.appendChild(tile);
+            if (!renderedTiles.has(entity.id)) renderedTiles.set(entity.id, []);
+            renderedTiles.get(entity.id).push({ entity, tile });
         }
 
         page.appendChild(grid);
@@ -422,6 +783,7 @@ function renderPages() {
     updateHeaderTemp();
     updateNowPlayingIndicator(mediaPlayers);
     updatePagePosition();
+    scheduleClockTiles();
 }
 
 function createMediaPlayerPage(mediaPlayers) {
@@ -590,7 +952,7 @@ function createMediaPlayerPage(mediaPlayers) {
                 entity_id: activePlayer.id,
                 shuffle: !isShuffle
             }).catch(err => console.error('Shuffle failed:', err));
-            setTimeout(() => getStates().then(renderPages), 500);
+            refreshStatesSoon(500);
         };
 
         const prevBtn = document.createElement('button');
@@ -617,7 +979,7 @@ function createMediaPlayerPage(mediaPlayers) {
                         media_player: activePlayer.id
                     });
                     console.log('Command sent successfully');
-                    setTimeout(() => getStates().then(renderPages), 2000);
+                    refreshStatesSoon(2000);
                 } catch (err) {
                     console.error('Failed to start Spotify:', err);
                     showError('Failed to start Spotify');
@@ -626,7 +988,7 @@ function createMediaPlayerPage(mediaPlayers) {
             }
             
             callService('media_player', 'media_play_pause', activePlayer.id);
-            setTimeout(() => getStates().then(renderPages), 1500);
+            refreshStatesSoon(1500);
         };
 
         const nextBtn = document.createElement('button');
@@ -647,7 +1009,7 @@ function createMediaPlayerPage(mediaPlayers) {
                 entity_id: activePlayer.id,
                 repeat: nextMode
             }).catch(err => console.error('Repeat failed:', err));
-            setTimeout(() => getStates().then(renderPages), 500);
+            refreshStatesSoon(500);
         };
 
         controls.appendChild(shuffleBtn);
@@ -684,6 +1046,7 @@ function createMediaPlayerPage(mediaPlayers) {
         };
         volumeTrack.addEventListener('touchstart', (e) => {
             isDraggingVolume = true;
+            isSliderDragging = true;
             updateVolume(e);
             e.preventDefault();
         }, { passive: false });
@@ -700,9 +1063,10 @@ function createMediaPlayerPage(mediaPlayers) {
                     entity_id: activePlayer.id,
                     volume_level: Math.round(pct * 100) / 100
                 }).catch(err => console.error('Volume failed:', err));
-                setTimeout(() => getStates().then(renderPages), 500);
+                refreshStatesSoon(500);
             }
             isDraggingVolume = false;
+            endSliderDrag();
         });
         volumeTrack.addEventListener('click', (e) => {
             const pct = updateVolume(e);
@@ -710,7 +1074,7 @@ function createMediaPlayerPage(mediaPlayers) {
                 entity_id: activePlayer.id,
                 volume_level: Math.round(pct * 100) / 100
             }).catch(err => console.error('Volume failed:', err));
-            setTimeout(() => getStates().then(renderPages), 500);
+            refreshStatesSoon(500);
         });
 
         volumeContainer.appendChild(volumeIcon);
@@ -1129,7 +1493,7 @@ async function playSpotifyPlaylistOnRoomDevice(playlistUrl) {
             console.log('Playing directly on Spotify entity:', payload);
             await callHA('services/media_player/play_media', 'POST', payload);
             showError(`Playing on ${targetDevice.label}...`);
-            setTimeout(() => getStates().then(renderPages), 2000);
+            refreshStatesSoon(2000);
             return;
         }
         
@@ -1144,7 +1508,7 @@ async function playSpotifyPlaylistOnRoomDevice(playlistUrl) {
         console.log('Payload:', payload);
         await callHA('services/media_player/play_media', 'POST', payload);
         showError(`Playing on ${targetDevice.label}...`);
-        setTimeout(() => getStates().then(renderPages), 2000);
+        refreshStatesSoon(2000);
         
     } catch (error) {
         console.error('Failed to play Spotify playlist:', error);
@@ -1171,7 +1535,7 @@ async function sendAssistantCommand(command) {
         });
         
         showError(`Sent to ${mediaPlayers[0].label}: "${command}"`);
-        setTimeout(() => getStates().then(renderPages), 1000);
+        refreshStatesSoon(1000);
     } catch (error) {
         console.error('Failed to send assistant command:', error);
         showError(`Failed: ${error.message || 'Check Google Assistant SDK integration'}`);
@@ -1295,7 +1659,7 @@ function createLightTile(entity, state) {
                 e.preventDefault(); // block synthetic click after a swipe
             }
 
-            isSliderDragging = false;
+            endSliderDrag();
             isSwiping = false;
         }, { passive: false });
 
@@ -1319,7 +1683,7 @@ async function setBrightness(entityId, brightness) {
                 brightness: brightness
             });
         }
-        setTimeout(() => getStates().then(renderPages), 100);
+        refreshStatesSoon(100);
     } catch (error) {
         console.error('Failed to set brightness:', error);
         showError('Failed to set brightness');
@@ -1443,7 +1807,7 @@ function createCoverTile(entity, state) {
                 e.preventDefault(); // block synthetic click after a swipe
             }
 
-            isSliderDragging = false;
+            endSliderDrag();
             isSwiping = false;
         }, { passive: false });
 
@@ -1461,7 +1825,7 @@ async function setCoverPosition(entityId, position) {
             entity_id: entityId,
             position: position
         });
-        setTimeout(() => getStates().then(renderPages), 100);
+        refreshStatesSoon(100);
     } catch (error) {
         console.error('Failed to set cover position:', error);
         showError('Failed to set cover position');
@@ -1775,7 +2139,7 @@ async function playSpotifyPlaylist(entityId, playlistUrl) {
             media_content_id: playlistUrl
         });
         showError('Playing Spotify playlist...');
-        setTimeout(() => getStates().then(renderPages), 1500);
+        refreshStatesSoon(1500);
     } catch (error) {
         console.error('Failed to play Spotify playlist:', error);
         showError('Failed to play playlist. Make sure Spotify is configured.');
@@ -1805,7 +2169,7 @@ async function adjustTemperature(entityId, delta) {
                 entity_id: entityId,
                 temperature: newTemp
             });
-            setTimeout(() => getStates().then(renderPages), 100);
+            refreshStatesSoon(100);
         } catch (error) {
             console.error('Failed to set temperature:', error);
             showError('Failed to set temperature');
@@ -2571,8 +2935,7 @@ async function saveGlobalAndContinue() {
     await saveGlobalConfig();
     
     // Test connection
-    const states = await getStates();
-    if (!states) {
+    if (!await testHAConnection()) {
         showError('Failed to connect to Home Assistant. Check your URL and token.');
         return;
     }
@@ -2622,8 +2985,7 @@ async function saveGlobalSettings() {
     applyHeaderVisibility();
 
     // Test connection
-    const states = await getStates();
-    if (!states) {
+    if (!await testHAConnection()) {
         showError('Failed to connect to Home Assistant. Check your URL and token.');
         return;
     }
@@ -2686,11 +3048,8 @@ async function saveRoom(mode) {
 
     closeAdmin();
     
-    const states = await getStates();
-    if (states) {
-        renderPages();
-        startPolling();
-    }
+    await startLiveStates();
+    renderPages();
 }
 
 async function deleteSelectedRoom() {
@@ -3243,15 +3602,8 @@ async function setClimateMode(entityId, mode) {
             hvac_mode: mode
         });
         
-        setTimeout(() => {
-            getStates().then(() => {
-                renderPages();
-                // Refresh modal if still open
-                if (currentClimateEntity === entityId) {
-                    openClimateModal(entityId);
-                }
-            });
-        }, 100);
+        // The new state re-renders the tile and refreshes the modal if it's still open
+        refreshStatesSoon(100);
     } catch (error) {
         console.error('Failed to set climate mode:', error);
         showError('Failed to set mode');
@@ -3435,23 +3787,6 @@ function closeWeatherModal(event) {
 }
 
 // ============================================
-// POLLING
-// ============================================
-function startPolling() {
-    if (pollInterval) {
-        clearInterval(pollInterval);
-    }
-
-    pollInterval = setInterval(async () => {
-        await getStates();
-        // Don't re-render if user is dragging a slider
-        if (!isSliderDragging) {
-            renderPages();
-        }
-    }, 2000);
-}
-
-// ============================================
 // INITIALIZATION
 // ============================================
 
@@ -3498,19 +3833,14 @@ async function init() {
             entities: []
         };
         
-        await getStates();
+        // Temperature and weather stay live over the socket
+        await startLiveStates();
         
         // Show screensaver immediately and keep it visible
         document.getElementById('screensaver').classList.add('active');
         document.getElementById('screensaver').style.cursor = 'default';
         updateScreensaverClock();
         screensaverClockInterval = setInterval(updateScreensaverClock, 1000);
-        
-        // Update states periodically
-        setInterval(async () => {
-            await getStates();
-            updateScreensaverClock();
-        }, 30000); // Update every 30 seconds
         
         return;
     }
@@ -3568,11 +3898,9 @@ async function init() {
         return;
     }
 
-    const states = await getStates();
-    if (states) {
-        renderPages();
-        startPolling();
-    } else {
+    const connected = await startLiveStates();
+    renderPages(); // if HA is down right now, the tiles go live once it answers
+    if (!connected) {
         showError('Cannot connect to Home Assistant');
         setTimeout(openAdmin, 2000);
     }

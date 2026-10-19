@@ -52,7 +52,13 @@ A modern, touch-friendly Home Assistant dashboard built for NSPanel displays (48
 HA_URL=http://homeassistant.local:8123 node serve.js
 ```
 
-`serve.js` is a self-contained Node server that serves the static files, proxies `/api/*` to Home Assistant, and implements the same config API the PHP backend provides (data is written to `./data/`). Defaults to port 8080; override with `PORT=...`.
+`serve.js` is a self-contained Node server that serves the static files, proxies `/api/*` to Home Assistant (including the `/api/websocket` upgrade), and implements the same config API the PHP backend provides (data is written to `./data/`). Defaults to port 8080; override with `PORT=...`.
+
+## Live State
+
+The dashboard gets entity state over Home Assistant's WebSocket API (`/api/websocket`, proxied through the same origin) and subscribes to only the entities the current room and screensaver show. HA pushes a small diff when one of them changes, and only the affected tiles are redrawn. If the socket can't connect, the dashboard falls back to fetching those entities over REST every 10 seconds. Everything pauses while the page is hidden.
+
+If you put your own reverse proxy in front of the dashboard, it must forward WebSocket upgrades on `/api/websocket` (the bundled nginx config does). The dashboard pings the socket every 20 seconds, so proxies with an idle timeout of 30 seconds or more are fine.
 
 ## Editing the Dashboard Files
 
