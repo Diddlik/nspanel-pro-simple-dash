@@ -107,7 +107,10 @@ async function handleConfigApi(req, res) {
   } else if (p === 'voice_messages') {
     const vmFile = dataFile('voice_messages.json');
     if (!fs.existsSync(vmFile)) fs.writeFileSync(vmFile, JSON.stringify([]));
-    if (method === 'GET') {
+    if (method === 'GET' && url.searchParams.has('summary')) {
+      // The list without the recorded audio, for cheap polling
+      res.end(JSON.stringify(readJson(vmFile, []).map(({ audioData, ...message }) => message)));
+    } else if (method === 'GET') {
       res.end(fs.readFileSync(vmFile, 'utf8'));
     } else if (method === 'POST') {
       const data = JSON.parse(await body(req));

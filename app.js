@@ -4048,23 +4048,58 @@ function testSound() {
 // ============================================
 // VOICE MESSAGES
 // ============================================
-let voiceMessages = [];
+// Messages carry their recorded audio as base64, so the full list can be big.
+// Polling only fetches a summary without the audio; the full list is loaded
+// to play, list or change messages, and reloaded right before every change
+// because saving writes the whole list back.
+let voiceMessages = [];          // full messages, as of the last loadVoiceMessages()
+let voiceMessageSummaries = [];  // what polling sees: same fields minus audioData
+const failedAutoplayKeys = new Set(); // auto-play failed once; don't re-download them every 5 s
 let isRecording = false;
 let mediaRecorder = null;
 let recordingChunks = [];
 let recordingTimer = null;
 let recordingSeconds = 0;
 
+// Returns false if it failed. Never save after a failed load: saving writes
+// the whole list, so it would drop every message that wasn't loaded.
 async function loadVoiceMessages() {
     try {
         const response = await fetch('/config-api.php?path=voice_messages');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
         voiceMessages = data || [];
-        updatePhoneBadge();
+        syncVoiceMessageSummaries();
+        return true;
     } catch (error) {
         console.error('Failed to load voice messages:', error);
-        voiceMessages = [];
+        return false;
     }
+}
+
+// Cheap poll: the message list without audio. Returns false if it failed.
+async function loadVoiceMessageSummaries() {
+    try {
+        const response = await fetch('/config-api.php?path=voice_messages&summary=1');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        // A server without the summary option sends the full list; drop the audio either way
+        voiceMessageSummaries = (data || []).map(({ audioData, ...message }) => message);
+        updatePhoneBadge();
+        return true;
+    } catch (error) {
+        console.error('Failed to check voice messages:', error);
+        return false;
+    }
+}
+
+function syncVoiceMessageSummaries() {
+    voiceMessageSummaries = voiceMessages.map(({ audioData, ...message }) => message);
+    updatePhoneBadge();
+}
+
+function voiceMessageKey(message) {
+    return `${message.timestamp}|${message.fromRoom}|${message.toRoom}`;
 }
 
 const FONT_OPTIONS = {
@@ -4116,7 +4151,7 @@ function applyHeaderVisibility() {
 
 function updatePhoneBadge() {
     const badge = document.getElementById('phoneBadge');
-    const unreadCount = voiceMessages.filter(m => m.toRoom === config.roomName && !m.read).length;
+    const unreadCount = voiceMessageSummaries.filter(m => m.toRoom === config.roomName && !m.read).length;
     
     if (unreadCount > 0) {
         badge.textContent = unreadCount;
@@ -4130,7 +4165,7 @@ async function openVoiceMessageModal() {
     const modal = document.getElementById('voiceMessageModal');
     const content = document.getElementById('voiceMessageContent');
     
-    await loadVoiceMessages();
+    const loaded = await loadVoiceMessages();
     
     // Filter messages for this room
     const myMessages = voiceMessages.filter(m => m.toRoom === config.roomName);
@@ -4176,9 +4211,9 @@ async function openVoiceMessageModal() {
     modal.classList.add('active');
     
     // Mark messages as read
+    if (!loaded) return;
     myMessages.forEach(msg => msg.read = true);
     await saveVoiceMessages();
-    updatePhoneBadge();
 }
 
 let selectedVoiceTarget = null;
@@ -4308,6 +4343,11 @@ async function sendVoiceMessage(audioBlob, toRoom) {
         
         reader.onloadend = async () => {
             const base64Audio = reader.result;
+            // Saving writes the whole list, so start from the latest
+            if (!await loadVoiceMessages()) {
+                showError('Failed to send voice message');
+                return;
+            }
             
             // Handle broadcast to all rooms
             if (toRoom === '__ALL__') {
@@ -4356,6 +4396,7 @@ async function saveVoiceMessages() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(voiceMessages)
         });
+        syncVoiceMessageSummaries();
     } catch (error) {
         console.error('Failed to save voice messages:', error);
     }
@@ -4382,8 +4423,14 @@ async function deleteVoiceMessage(index) {
     
     if (!message) return;
     
-    const globalIndex = voiceMessages.indexOf(message);
-    voiceMessages.splice(globalIndex, 1);
+    // Saving writes the whole list, so delete from the latest one
+    const key = voiceMessageKey(message);
+    if (!await loadVoiceMessages()) {
+        showError('Failed to delete message');
+        return;
+    }
+    const globalIndex = voiceMessages.findIndex(m => voiceMessageKey(m) === key);
+    if (globalIndex >= 0) voiceMessages.splice(globalIndex, 1);
     
     await saveVoiceMessages();
     openVoiceMessageModal(); // Refresh
@@ -4401,13 +4448,20 @@ function formatMessageTime(timestamp) {
     return date.toLocaleDateString();
 }
 
-// Check for new messages periodically
+// Check for new messages periodically. This keeps running while the page is
+// hidden (e.g. under Fully's screensaver) so incoming messages still play;
+// the summary poll is a few hundred bytes.
 setInterval(async () => {
     if (config && config.roomName && !isScreensaverOnlyMode) {
-        await loadVoiceMessages();
+        if (!await loadVoiceMessageSummaries()) return;
+        const shouldAutoplay = m => m.toRoom === config.roomName && !m.read && !failedAutoplayKeys.has(voiceMessageKey(m));
+        if (!voiceMessageSummaries.some(shouldAutoplay)) return;
+
+        // Something to play: now fetch the audio
+        if (!await loadVoiceMessages()) return;
         
         // Auto-play unread messages
-        const unreadMessages = voiceMessages.filter(m => m.toRoom === config.roomName && !m.read);
+        const unreadMessages = voiceMessages.filter(shouldAutoplay);
         
         if (unreadMessages.length > 0) {
             // Play notification sound
@@ -4427,8 +4481,9 @@ setInterval(async () => {
                 // Mark as read
                 message.read = true;
                 await saveVoiceMessages();
-                updatePhoneBadge();
             } catch (error) {
+                // Stays unread (badge shows it); retrying would re-download the audio every 5 s
+                failedAutoplayKeys.add(voiceMessageKey(message));
                 console.error('Failed to auto-play message:', error);
             }
         }
