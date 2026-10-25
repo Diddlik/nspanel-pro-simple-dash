@@ -419,6 +419,31 @@ body {
     text-align: center;
 }
 
+.sensor-gauge {
+    position: relative;
+    width: 100%;
+    max-width: 180px;
+}
+
+.sensor-gauge svg {
+    display: block;
+    width: 100%;
+    fill: none;
+    stroke-width: 8;
+    stroke-linecap: round;
+}
+
+.sensor-gauge .gauge-track {
+    stroke: rgba(255, 255, 255, 0.1);
+}
+
+.sensor-gauge .temp-display {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+}
+
 .tile.weather {
     background: rgba(255, 255, 255, 0.05);
     border-color: rgba(255, 255, 255, 0.1);

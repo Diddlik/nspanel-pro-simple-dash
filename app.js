@@ -225,6 +225,7 @@ async function saveConfig() {
             roomName: config.roomName,
             headerTempEntity: config.headerTempEntity,
             screensaverWeather: config.screensaverWeather,
+            wakeEntity: config.wakeEntity,
             gridColumns: config.gridColumns,
             gridRows: config.gridRows,
             entities: config.entities,
@@ -357,6 +358,7 @@ function getWatchedEntityIds() {
         .filter(id => !NON_HA_DOMAINS.includes(id.split('.')[0]));
     if (config.headerTempEntity) ids.push(config.headerTempEntity);
     if (config.screensaverWeather) ids.push(config.screensaverWeather);
+    if (config.wakeEntity) ids.push(config.wakeEntity);
     return [...new Set(ids)].filter(id => VALID_ENTITY_ID.test(id));
 }
 
@@ -627,6 +629,10 @@ let pendingRenderIds = new Set();
 let clockTileTimer = null;
 
 function onEntitiesChanged(changedIds) {
+    if (changedIds.has(config.wakeEntity) && isWakeEntityOn() &&
+        document.getElementById('screensaver').classList.contains('active')) {
+        exitScreensaver();
+    }
     changedIds.forEach(id => pendingRenderIds.add(id));
     // Don't re-render while a slider is being dragged; endSliderDrag() catches up.
     if (isSliderDragging || document.hidden) return;
@@ -1939,7 +1945,32 @@ function createSensorTile(entity, state) {
     }
 
     tile.appendChild(label);
-    tile.appendChild(tempDisplay);
+
+    if (entity.showGauge) {
+        // Semicircle arc; pathLength=100 lets the dash length be the fill percentage
+        const min = entity.gaugeMin ?? 0;
+        const max = entity.gaugeMax ?? 100;
+        const value = state ? parseFloat(state.state) : NaN;
+        const pct = isNaN(value) || max <= min ? 0 : Math.min(100, Math.max(0, (value - min) / (max - min) * 100));
+        let color = `hsl(${210 - pct * 2.1}, 80%, 55%)`; // blue → red
+        if (!isNaN(value) && (entity.gaugeYellow !== undefined || entity.gaugeRed !== undefined)) {
+            color = value >= (entity.gaugeRed ?? Infinity) ? '#ef5350'
+                : value >= (entity.gaugeYellow ?? Infinity) ? '#ffca28'
+                : '#66bb6a';
+        }
+        const arc = 'M10 50 A40 40 0 0 1 90 50';
+        const gauge = document.createElement('div');
+        gauge.className = 'sensor-gauge';
+        gauge.innerHTML = `
+            <svg viewBox="0 0 100 56" aria-hidden="true">
+                <path d="${arc}" pathLength="100" class="gauge-track"/>
+                <path d="${arc}" pathLength="100" class="gauge-fill" stroke="${color}" stroke-dasharray="${pct} 100"/>
+            </svg>`;
+        gauge.appendChild(tempDisplay);
+        tile.appendChild(gauge);
+    } else {
+        tile.appendChild(tempDisplay);
+    }
 
     return tile;
 }
@@ -2361,7 +2392,16 @@ function resetInactivityTimer() {
     inactivityTimer = setTimeout(enterScreensaver, timeout);
 }
 
+function isWakeEntityOn() {
+    return !!config.wakeEntity && entityStates[config.wakeEntity]?.state === 'on';
+}
+
 function enterScreensaver() {
+    // Stay awake while the room's motion sensor still reports presence
+    if (isWakeEntityOn()) {
+        resetInactivityTimer();
+        return;
+    }
     document.getElementById('screensaver').classList.add('active');
     updateScreensaverClock();
     screensaverClockInterval = setInterval(updateScreensaverClock, 1000);
@@ -2707,6 +2747,7 @@ function getRoomEditorCurrentState() {
         roomName: document.getElementById('roomNameInput')?.value.trim() || '',
         headerTempEntity: document.getElementById('headerTempEntityInput')?.value.trim() || '',
         screensaverWeather: document.getElementById('screensaverWeatherInput')?.value.trim() || '',
+        wakeEntity: document.getElementById('wakeEntityInput')?.value.trim() || '',
         gridColumns: parseInt(document.getElementById('gridColumnsInput')?.value) || 2,
         gridRows: parseInt(document.getElementById('gridRowsInput')?.value) || 2,
         entities: window.editingRoomData?.entities || [],
@@ -2786,6 +2827,12 @@ function showRoomEditor(mode, roomIdx) {
             <label class="form-label">Screensaver Weather Entity (Optional)</label>
             <input type="text" class="form-input" id="screensaverWeatherInput" placeholder="weather.home" value="${roomData.screensaverWeather || ''}">
             <small style="color: #888; font-size: 12px;">Shows weather on screensaver</small>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Wake Entity (Optional)</label>
+            <input type="text" class="form-input" id="wakeEntityInput" placeholder="binary_sensor.bathroom_motion" value="${(roomData.wakeEntity || '').replace(/[&"<>]/g, c => `&#${c.charCodeAt(0)};`)}">
+            <small style="color: #888; font-size: 12px;">Hides the screensaver while this entity is "on" (e.g. a motion sensor)</small>
         </div>
 
         <div class="form-group">
@@ -2912,6 +2959,7 @@ function showRoomEditor(mode, roomIdx) {
         roomName: roomData.roomName || '',
         headerTempEntity: roomData.headerTempEntity || '',
         screensaverWeather: roomData.screensaverWeather || '',
+        wakeEntity: roomData.wakeEntity || '',
         gridColumns: roomData.gridColumns || 2,
         gridRows: roomData.gridRows || 2,
         entities: roomData.entities || [],
@@ -3008,11 +3056,17 @@ async function saveRoom(mode) {
     const roomName = document.getElementById('roomNameInput').value.trim();
     const headerTempEntity = document.getElementById('headerTempEntityInput').value.trim();
     const screensaverWeather = document.getElementById('screensaverWeatherInput').value.trim();
+    const wakeEntity = document.getElementById('wakeEntityInput').value.trim();
     const gridColumns = parseInt(document.getElementById('gridColumnsInput').value) || 2;
     const gridRows = parseInt(document.getElementById('gridRowsInput').value) || 2;
 
     if (!roomName) {
         showError('Please enter a room name');
+        return;
+    }
+
+    if (wakeEntity && !VALID_ENTITY_ID.test(wakeEntity)) {
+        showError('Wake entity must be a full entity ID, e.g. binary_sensor.bathroom_motion');
         return;
     }
 
@@ -3025,6 +3079,7 @@ async function saveRoom(mode) {
         roomName,
         headerTempEntity,
         screensaverWeather,
+        wakeEntity,
         gridColumns,
         gridRows,
         entities: window.editingRoomData.entities,
@@ -3157,6 +3212,11 @@ function openEntityModal(index) {
         document.getElementById('newEntityDisableAction').checked = entity.disableAction || false;
         document.getElementById('newEntityDisableDimming').checked = entity.disableDimming || false;
         document.getElementById('newEntityDecimals').value = entity.decimals !== undefined ? entity.decimals : '';
+        document.getElementById('newEntityShowGauge').checked = entity.showGauge || false;
+        document.getElementById('newEntityGaugeMin').value = entity.gaugeMin !== undefined ? entity.gaugeMin : '';
+        document.getElementById('newEntityGaugeMax').value = entity.gaugeMax !== undefined ? entity.gaugeMax : '';
+        document.getElementById('newEntityGaugeYellow').value = entity.gaugeYellow !== undefined ? entity.gaugeYellow : '';
+        document.getElementById('newEntityGaugeRed').value = entity.gaugeRed !== undefined ? entity.gaugeRed : '';
         document.getElementById('newEntityHideWeatherName').checked = entity.hideWeatherName || false;
         document.getElementById('newEntityHideWeatherIcon').checked = entity.hideWeatherIcon || false;
         document.getElementById('newEntityHideWeatherForecast').checked = entity.hideWeatherForecast || false;
@@ -3177,6 +3237,11 @@ function openEntityModal(index) {
         document.getElementById('newEntityDisableAction').checked = false;
         document.getElementById('newEntityDisableDimming').checked = false;
         document.getElementById('newEntityDecimals').value = '';
+        document.getElementById('newEntityShowGauge').checked = false;
+        document.getElementById('newEntityGaugeMin').value = '';
+        document.getElementById('newEntityGaugeMax').value = '';
+        document.getElementById('newEntityGaugeYellow').value = '';
+        document.getElementById('newEntityGaugeRed').value = '';
         document.getElementById('newEntityHideWeatherName').checked = false;
         document.getElementById('newEntityHideWeatherIcon').checked = false;
         document.getElementById('newEntityHideWeatherForecast').checked = false;
@@ -3241,6 +3306,17 @@ function saveEntityModal() {
     if (domain === 'sensor') {
         const decimalsRaw = document.getElementById('newEntityDecimals').value;
         if (decimalsRaw !== '') entity.decimals = parseInt(decimalsRaw);
+        if (document.getElementById('newEntityShowGauge').checked) {
+            entity.showGauge = true;
+            const minRaw = document.getElementById('newEntityGaugeMin').value;
+            const maxRaw = document.getElementById('newEntityGaugeMax').value;
+            if (minRaw !== '') entity.gaugeMin = parseFloat(minRaw);
+            if (maxRaw !== '') entity.gaugeMax = parseFloat(maxRaw);
+            const yellowRaw = document.getElementById('newEntityGaugeYellow').value;
+            const redRaw = document.getElementById('newEntityGaugeRed').value;
+            if (yellowRaw !== '') entity.gaugeYellow = parseFloat(yellowRaw);
+            if (redRaw !== '') entity.gaugeRed = parseFloat(redRaw);
+        }
     }
     if (domain === 'clock') {
         if (document.getElementById('newEntityHideClockDate').checked) entity.hideClockDate = true;

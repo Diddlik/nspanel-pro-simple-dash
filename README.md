@@ -98,6 +98,7 @@ Open the editor by long-pressing (~2s) anywhere on the dashboard, or by visiting
 - **Grid columns/rows** — controls entities per page and tile sizing
 - **Header temperature entity** — a `climate` or `sensor` shown in the header with quick controls
 - **Screensaver weather entity** — room-specific weather shown on the screensaver
+- **Wake entity** — e.g. a motion `binary_sensor`; hides the screensaver while it is `on` and keeps it from coming back
 - **Entities** — add, edit, reorder, remove
 - **Assistant commands** — custom voice command tiles (sent via `google_assistant_sdk` to the first media player in the room)
 - **Spotify playlists** — tiles that start a given playlist on the room's media player
@@ -114,7 +115,7 @@ Leaving the room editor with unsaved changes prompts a confirmation before disca
 | `cover` | Toggle; swipe to set position if the entity supports it |
 | `climate` | Opens a modal with current/target temperature and HVAC mode buttons |
 | `scene`, `script`, `automation` | Trigger/activate |
-| `sensor` | Read-only value with unit, optional fixed decimal places |
+| `sensor` | Read-only value with unit, optional fixed decimal places, optional gauge |
 | `weather` | Current condition tile; tap opens a forecast modal; optional inline forecast strip |
 | `media_player` | Tap to play/pause, transport buttons on the tile, full dedicated media page; long-press (800ms) for a Google Assistant voice command prompt |
 
@@ -125,6 +126,7 @@ Leaving the room editor with unsaved changes prompts a confirmation before disca
 - **Disable action** — make the tile display-only (no tap/swipe interaction)
 - **Disable dimming** (`light` only) — toggle-only, no brightness swipe
 - **Decimals** (`sensor` only) — 0–3 fixed decimal places
+- **Show as gauge** (`sensor` only) — semicircle gauge with min/max; optional yellow/red thresholds (green below yellow), otherwise a blue → red gradient
 - **Hide weather name / icon / forecast** (`weather` only)
 - **Full-width row layout** (`weather` only) — icon-left, content-right instead of a square tile
 - **Popup forecast type** (`weather` only) — daily or hourly periods in the tap-to-open forecast modal (default hourly)

@@ -224,6 +224,19 @@
                             <option value="2">2</option>
                             <option value="3">3</option>
                         </select>
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin-top: 6px;">
+                            <input type="checkbox" id="newEntityShowGauge" aria-label="Show as gauge" style="width: 18px; height: 18px; cursor: pointer;">
+                            <span style="font-size: 13px; color: #888;">Show as gauge</span>
+                        </label>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <input type="number" id="newEntityGaugeMin" class="form-input" placeholder="Min (0)" aria-label="Gauge minimum" style="width: 100px; padding: 6px 8px;">
+                            <input type="number" id="newEntityGaugeMax" class="form-input" placeholder="Max (100)" aria-label="Gauge maximum" style="width: 100px; padding: 6px 8px;">
+                        </div>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <input type="number" id="newEntityGaugeYellow" class="form-input" placeholder="Yellow from" aria-label="Gauge yellow threshold" style="width: 100px; padding: 6px 8px;">
+                            <input type="number" id="newEntityGaugeRed" class="form-input" placeholder="Red from" aria-label="Gauge red threshold" style="width: 100px; padding: 6px 8px;">
+                        </div>
+                        <small style="color: #888; font-size: 12px;">Below yellow = green. Leave both empty for a blue → red gradient.</small>
                     </div>
                     <div id="entityOptWeather" style="display: none; flex-direction: column; gap: 8px;">
                         <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
