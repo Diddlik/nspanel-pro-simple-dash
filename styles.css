@@ -27,6 +27,7 @@
     --tile-cooling-bg: linear-gradient(135deg, rgba(3, 169, 244, 0.2) 0%, rgba(3, 169, 244, 0.1) 100%);
     --tile-sensor-bg:       linear-gradient(135deg, rgba(156, 39, 176, 0.15) 0%, rgba(156, 39, 176, 0.05) 100%);
     --tile-spotify-bg:      linear-gradient(135deg, rgba(30, 215, 96, 0.15) 0%, rgba(29, 185, 84, 0.05) 100%);
+    --tile-switch-on-bg:    linear-gradient(135deg, rgba(255, 193, 7, 0.28) 0%, rgba(255, 193, 7, 0.08) 100%);
 }
 
 * {
@@ -370,6 +371,12 @@ body {
 
 .tile.on .tile-icon {
     color: #ffc107;
+}
+
+.tile.switch.on,
+.tile.input_boolean.on {
+    background: var(--tile-switch-on-bg);
+    border-color: rgba(255, 193, 7, 0.45);
 }
 
 .tile.light.has-slider, .tile.cover.has-slider {
