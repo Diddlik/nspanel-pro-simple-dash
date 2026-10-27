@@ -177,7 +177,7 @@ Tap the phone icon in the header to record a short (max 30s) audio message and s
 
 ### Theming with `custom.css`
 
-A Dark/Light theme switch is in Global Settings. Light-mode values live in the `:root[data-theme="light"]` block of `styles.css`; override them in `custom.css` the same way.
+Each room can pick Dark or Light in the room editor (falls back to the default theme in Global Settings). Light-mode values live in the `:root[data-theme="light"]` block of `styles.css`; override them in `custom.css` the same way.
 
 Tokens are defined in `styles.css`'s `:root` block and re-declared (commented, as a starting point) in `custom.css.example`. To override any of them without touching the tracked files:
 

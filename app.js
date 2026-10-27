@@ -229,6 +229,7 @@ async function saveConfig() {
             wakeEntity: config.wakeEntity,
             gridColumns: config.gridColumns,
             gridRows: config.gridRows,
+            theme: roomConfigs.find(r => r.roomName === config.roomName)?.theme || '',
             entities: config.entities,
             assistantCommands: config.assistantCommands || [],
             spotifyPlaylists: config.spotifyPlaylists || []
@@ -2667,7 +2668,7 @@ function showGlobalSettings() {
                 </select>
             </div>
             <div class="form-group">
-                <label class="form-label">Theme</label>
+                <label class="form-label">Default Theme</label>
                 <select class="form-input" id="themeInput">
                     <option value="dark" ${globalConfig.theme !== 'light' ? 'selected' : ''}>Dark</option>
                     <option value="light" ${globalConfig.theme === 'light' ? 'selected' : ''}>Light</option>
@@ -2758,6 +2759,7 @@ function getRoomEditorCurrentState() {
         wakeEntity: document.getElementById('wakeEntityInput')?.value.trim() || '',
         gridColumns: parseInt(document.getElementById('gridColumnsInput')?.value) || 2,
         gridRows: parseInt(document.getElementById('gridRowsInput')?.value) || 2,
+        theme: document.getElementById('roomThemeInput')?.value || '',
         entities: window.editingRoomData?.entities || [],
         assistantCommands: window.editingRoomData?.assistantCommands || [],
         spotifyPlaylists: window.editingRoomData?.spotifyPlaylists || [],
@@ -2823,6 +2825,15 @@ function showRoomEditor(mode, roomIdx) {
                 </div>
             </div>
             <small style="color: #888; font-size: 12px;">Tiles per page: ${(roomData.gridColumns || 2) * (roomData.gridRows || 2)}</small>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Theme</label>
+            <select class="form-input" id="roomThemeInput">
+                <option value="" ${!roomData.theme ? 'selected' : ''}>Global default</option>
+                <option value="dark" ${roomData.theme === 'dark' ? 'selected' : ''}>Dark</option>
+                <option value="light" ${roomData.theme === 'light' ? 'selected' : ''}>Light</option>
+            </select>
         </div>
 
         <div class="form-group">
@@ -2970,6 +2981,7 @@ function showRoomEditor(mode, roomIdx) {
         wakeEntity: roomData.wakeEntity || '',
         gridColumns: roomData.gridColumns || 2,
         gridRows: roomData.gridRows || 2,
+        theme: roomData.theme || '',
         entities: roomData.entities || [],
         assistantCommands: roomData.assistantCommands || [],
         spotifyPlaylists: roomData.spotifyPlaylists || [],
@@ -3069,6 +3081,7 @@ async function saveRoom(mode) {
     const wakeEntity = document.getElementById('wakeEntityInput').value.trim();
     const gridColumns = parseInt(document.getElementById('gridColumnsInput').value) || 2;
     const gridRows = parseInt(document.getElementById('gridRowsInput').value) || 2;
+    const theme = document.getElementById('roomThemeInput').value;
 
     if (!roomName) {
         showError('Please enter a room name');
@@ -3092,6 +3105,7 @@ async function saveRoom(mode) {
         wakeEntity,
         gridColumns,
         gridRows,
+        theme,
         entities: window.editingRoomData.entities,
         assistantCommands: window.editingRoomData.assistantCommands || [],
         spotifyPlaylists: window.editingRoomData.spotifyPlaylists || []
@@ -3123,6 +3137,7 @@ async function saveRoom(mode) {
     await saveConfig();
 
     closeAdmin();
+    applyTheme();
     
     await startLiveStates();
     renderPages();
@@ -3949,7 +3964,6 @@ async function init() {
     roomConfigs = await loadRoomConfigs();
     
     applyFontFamily();
-    applyTheme();
     applyDeviceModel();
     applyVoiceMessageVisibility();
     applyHeaderVisibility();
@@ -3961,6 +3975,7 @@ async function init() {
         const idx = roomConfigs.findIndex(r => r.roomName === roomParam);
         if (idx >= 0) config = { ...globalConfig, ...roomConfigs[idx] };
     }
+    applyTheme();
 
     // Restore admin view from URL params on reload
     if (adminView && (config || globalConfig.haToken)) {
@@ -4214,8 +4229,11 @@ function applyFontFamily() {
     document.documentElement.style.setProperty('--font-body', font.stack);
 }
 
+// Room theme wins; empty means use the global default
 function applyTheme() {
-    document.documentElement.dataset.theme = globalConfig.theme === 'light' ? 'light' : 'dark';
+    const room = config && roomConfigs.find(r => r.roomName === config.roomName);
+    const theme = room?.theme || globalConfig.theme;
+    document.documentElement.dataset.theme = theme === 'light' ? 'light' : 'dark';
 }
 
 function applyDeviceModel() {
