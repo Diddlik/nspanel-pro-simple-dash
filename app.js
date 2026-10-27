@@ -23,7 +23,8 @@ const DEFAULT_GLOBAL_CONFIG = {
     screensaverTimeFormat: '24h', // '24h' or '12h'
     hideVoiceMessages: false,
     deviceModel: 'pro',
-    fontFamily: 'Inter'
+    fontFamily: 'Inter',
+    theme: 'dark'
 };
 
 // Split entities into pages by simulating the grid's row-major auto-placement
@@ -2586,7 +2587,7 @@ function showRoomManager() {
         <div class="error-message" id="errorMessage"></div>
 
         ${!config && hasRooms ? `
-        <div style="background: rgba(99, 179, 237, 0.15); border: 1px solid rgba(99, 179, 237, 0.4); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; color: rgba(255,255,255,0.85); font-size: 13px;">
+        <div style="background: rgba(99, 179, 237, 0.15); border: 1px solid rgba(99, 179, 237, 0.4); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; color: rgba(var(--fg-rgb), 0.85); font-size: 13px;">
             Select a room for this panel to get started.
         </div>` : ''}
 
@@ -2606,7 +2607,7 @@ function showRoomManager() {
 
         <button class="add-btn" style="width: 100%; margin-bottom: 24px;" onclick="showRoomEditor('new')">+ New Room</button>
 
-        <div style="border-top: 1px solid rgba(255, 255, 255, 0.1); padding-top: 20px; margin-top: 4px;">
+        <div style="border-top: 1px solid rgba(var(--fg-rgb), 0.1); padding-top: 20px; margin-top: 4px;">
             <button class="save-btn" style="background: linear-gradient(135deg, #666 0%, #444 100%);" onclick="showGlobalSettings()">Global Settings</button>
         </div>
     `;
@@ -2666,6 +2667,13 @@ function showGlobalSettings() {
                 </select>
             </div>
             <div class="form-group">
+                <label class="form-label">Theme</label>
+                <select class="form-input" id="themeInput">
+                    <option value="dark" ${globalConfig.theme !== 'light' ? 'selected' : ''}>Dark</option>
+                    <option value="light" ${globalConfig.theme === 'light' ? 'selected' : ''}>Light</option>
+                </select>
+            </div>
+            <div class="form-group">
                 <label class="form-label">Font Family</label>
                 <select class="form-input" id="fontFamilyInput">
                     ${Object.keys(FONT_OPTIONS).map(name =>
@@ -2715,7 +2723,7 @@ function showGlobalSettings() {
                 </label>
                 <small style="color: #888; font-size: 12px; display: block; margin-top: 4px;">
                     Use if you prefer Fully Kiosk's screensaver instead.<br>
-                    <strong>Standalone URL:</strong> <code style="background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px;">${window.location.origin}/?screensaver=true</code>
+                    <strong>Standalone URL:</strong> <code style="background: rgba(var(--fg-rgb), 0.1); padding: 2px 6px; border-radius: 4px;">${window.location.origin}/?screensaver=true</code>
                 </small>
             </div>
         </div>
@@ -2861,9 +2869,9 @@ function showRoomEditor(mode, roomIdx) {
                 <input type="text" class="form-input" id="newPlaylistUrl" placeholder="https://open.spotify.com/playlist/... or spotify:playlist:...">
                 <div style="display: flex; gap: 8px; align-items: center;">
                     <label class="form-label" style="margin: 0; min-width: 40px;">Icon:</label>
-                    <button onclick="openPlaylistIconPicker()" id="playlistIconPickerButton" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); color: rgba(255,255,255,0.7); padding: 12px 20px; border-radius: 8px; cursor: pointer; font-family: 'Material Symbols Outlined'; font-size: 24px; display: flex; align-items: center; gap: 8px; flex: 1;">
+                    <button onclick="openPlaylistIconPicker()" id="playlistIconPickerButton" style="background: rgba(var(--fg-rgb), 0.05); border: 1px solid rgba(var(--fg-rgb), 0.15); color: rgba(var(--fg-rgb), 0.7); padding: 12px 20px; border-radius: 8px; cursor: pointer; font-family: 'Material Symbols Outlined'; font-size: 24px; display: flex; align-items: center; gap: 8px; flex: 1;">
                         <span id="selectedPlaylistIconPreview">queue_music</span>
-                        <span id="selectedPlaylistIconName" style="font-family: 'Inter', sans-serif; font-size: 12px; color: rgba(255,255,255,0.5);">queue_music</span>
+                        <span id="selectedPlaylistIconName" style="font-family: 'Inter', sans-serif; font-size: 12px; color: rgba(var(--fg-rgb), 0.5);">queue_music</span>
                     </button>
                     <input type="hidden" id="newPlaylistIcon" value="queue_music">
                 </div>
@@ -3007,6 +3015,7 @@ async function saveGlobalSettings() {
     globalConfig.haToken = document.getElementById('haTokenInput').value.trim();
     globalConfig.assistantEntity = document.getElementById('assistantEntityInput').value.trim();
     globalConfig.fontFamily = document.getElementById('fontFamilyInput').value;
+    globalConfig.theme = document.getElementById('themeInput').value;
     globalConfig.deviceModel = document.getElementById('deviceModelInput').value;
     globalConfig.hideVoiceMessages = document.getElementById('hideVoiceMessagesInput').checked;
     globalConfig.disableBuiltInScreensaver = document.getElementById('disableScreensaverInput').checked;
@@ -3039,6 +3048,7 @@ async function saveGlobalSettings() {
     }
 
     applyFontFamily();
+    applyTheme();
     applyDeviceModel();
     applyVoiceMessageVisibility();
     applyHeaderVisibility();
@@ -3773,7 +3783,7 @@ async function openWeatherForecast(entityId) {
     
     // Update forecast list
     const forecastList = document.getElementById('weatherForecastList');
-    forecastList.innerHTML = '<div style="text-align: center; padding: 20px; color: rgba(255, 255, 255, 0.5);">Loading forecast...</div>';
+    forecastList.innerHTML = '<div style="text-align: center; padding: 20px; color: rgba(var(--fg-rgb), 0.5);">Loading forecast...</div>';
     
     modal.classList.add('active');
 
@@ -3810,7 +3820,7 @@ async function openWeatherForecast(entityId) {
         
         if (forecastData.length === 0) {
             forecastList.innerHTML = `
-                <div style="text-align: center; padding: 20px; color: rgba(255, 255, 255, 0.5); font-size: 14px;">
+                <div style="text-align: center; padding: 20px; color: rgba(var(--fg-rgb), 0.5); font-size: 14px;">
                     No forecast data available.<br>
                     <small style="font-size: 12px; margin-top: 8px; display: block;">
                         Make sure your weather integration provides forecast data.
@@ -3858,7 +3868,7 @@ async function openWeatherForecast(entityId) {
     } catch (error) {
         console.error('Failed to fetch forecast:', error);
         forecastList.innerHTML = `
-            <div style="text-align: center; padding: 20px; color: rgba(255, 255, 255, 0.5); font-size: 14px;">
+            <div style="text-align: center; padding: 20px; color: rgba(var(--fg-rgb), 0.5); font-size: 14px;">
                 Failed to load forecast data.<br>
                 <small style="font-size: 12px; margin-top: 8px; display: block;">
                     ${error.message || 'Unknown error'}
@@ -3939,6 +3949,7 @@ async function init() {
     roomConfigs = await loadRoomConfigs();
     
     applyFontFamily();
+    applyTheme();
     applyDeviceModel();
     applyVoiceMessageVisibility();
     applyHeaderVisibility();
@@ -4069,7 +4080,7 @@ function renderIconGrid(icons) {
     grid.innerHTML = '';
     
     if (icons.length === 0) {
-        grid.innerHTML = '<div style="grid-column: 1 / -1; text-align: center; padding: 20px; color: rgba(255,255,255,0.5);">No icons found</div>';
+        grid.innerHTML = '<div style="grid-column: 1 / -1; text-align: center; padding: 20px; color: rgba(var(--fg-rgb), 0.5);">No icons found</div>';
         return;
     }
     
@@ -4203,6 +4214,10 @@ function applyFontFamily() {
     document.documentElement.style.setProperty('--font-body', font.stack);
 }
 
+function applyTheme() {
+    document.documentElement.dataset.theme = globalConfig.theme === 'light' ? 'light' : 'dark';
+}
+
 function applyDeviceModel() {
     document.querySelector('.container').classList.toggle('pro120', globalConfig.deviceModel === 'pro120');
 }
@@ -4263,7 +4278,7 @@ async function openVoiceMessageModal() {
                     </div>
                 `).join('')}
             </div>
-        ` : '<div style="text-align: center; padding: 20px; color: rgba(255,255,255,0.5); font-size: 13px;">No messages</div>'}
+        ` : '<div style="text-align: center; padding: 20px; color: rgba(var(--fg-rgb), 0.5); font-size: 13px;">No messages</div>'}
         
         <div class="voice-record-section">
             <div class="voice-room-buttons">
