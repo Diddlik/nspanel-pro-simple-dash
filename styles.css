@@ -38,12 +38,45 @@
 }
 
 :root[data-theme="light"] {
-    --fg-rgb:        20, 20, 20;
-    --bg:            linear-gradient(135deg, #f2f2f2 0%, #e2e2e2 100%);
-    --gradient-text: linear-gradient(135deg, #111 0%, #555 100%);
-    --surface:       linear-gradient(135deg, #ffffff 0%, #f2f2f2 100%);
-    --tile-bg:       rgba(255, 255, 255, 0.75);
+    --fg-rgb:        28, 28, 30;
+    --bg:            linear-gradient(135deg, #f5f5f7 0%, #e6e7eb 100%);
+    --gradient-text: linear-gradient(135deg, #1c1c1e 0%, #5a5a60 100%);
+    --surface:       linear-gradient(135deg, #ffffff 0%, #f5f5f7 100%);
+    --tile-bg:       rgba(255, 255, 255, 0.85);
+
+    /* Stronger tints so colored tiles still read on a light page */
+    --tile-on-bg:        linear-gradient(135deg, rgba(66, 165, 245, 0.22) 0%, rgba(33, 150, 243, 0.08) 100%);
+    --tile-climate-bg:   linear-gradient(135deg, rgba(33, 150, 243, 0.2) 0%, rgba(33, 150, 243, 0.07) 100%);
+    --tile-heating-bg:   linear-gradient(135deg, rgba(255, 87, 34, 0.25) 0%, rgba(255, 87, 34, 0.1) 100%);
+    --tile-cooling-bg:   linear-gradient(135deg, rgba(3, 169, 244, 0.25) 0%, rgba(3, 169, 244, 0.1) 100%);
+    --tile-sensor-bg:    linear-gradient(135deg, rgba(156, 39, 176, 0.16) 0%, rgba(156, 39, 176, 0.05) 100%);
+    --tile-spotify-bg:   linear-gradient(135deg, rgba(30, 215, 96, 0.22) 0%, rgba(29, 185, 84, 0.08) 100%);
+    --tile-switch-on-bg: linear-gradient(135deg, rgba(255, 193, 7, 0.4) 0%, rgba(255, 193, 7, 0.14) 100%);
     color-scheme: light;
+}
+
+/* Soft shadow instead of a glow to lift tiles off the light page */
+:root[data-theme="light"] .tile {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 4px 12px rgba(0, 0, 0, 0.04);
+}
+
+/* #ffc107 is too pale on white — use a deeper amber */
+:root[data-theme="light"] .tile.on .tile-icon {
+    color: #e09400;
+}
+
+:root[data-theme="light"] .tile.switch.on,
+:root[data-theme="light"] .tile.input_boolean.on {
+    border-color: rgba(224, 148, 0, 0.5);
+}
+
+/* Lighter dim behind the climate popup */
+:root[data-theme="light"] .climate-modal {
+    background: rgba(0, 0, 0, 0.35);
+}
+
+:root[data-theme="light"] .climate-modal-content {
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
 }
 
 /* Always dark (screensaver, album-art backed views), regardless of theme */
