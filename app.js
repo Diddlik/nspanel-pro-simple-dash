@@ -95,6 +95,7 @@ function paginateEntities(items, gridColumns, gridRows) {
 let config = null;
 let globalConfig = null;
 let roomConfigs = [];
+let gaugeSeq = 0; // unique SVG gradient ids per rendered gauge
 let entityStates = {};
 let isConnected = false;
 let currentPage = 0;
@@ -1949,24 +1950,50 @@ function createSensorTile(entity, state) {
     tile.appendChild(label);
 
     if (entity.showGauge) {
-        // Semicircle arc; pathLength=100 lets the dash length be the fill percentage
+        // Semicircle (center 50,50, r 40): gradient sectors, tick marks, pointer at the value.
+        // f is the 0..1 fraction of the sweep, left → right.
         const min = entity.gaugeMin ?? 0;
         const max = entity.gaugeMax ?? 100;
         const value = state ? parseFloat(state.state) : NaN;
-        const pct = isNaN(value) || max <= min ? 0 : Math.min(100, Math.max(0, (value - min) / (max - min) * 100));
-        let color = `hsl(${210 - pct * 2.1}, 80%, 55%)`; // blue → red
-        if (!isNaN(value) && (entity.gaugeYellow !== undefined || entity.gaugeRed !== undefined)) {
-            color = value >= (entity.gaugeRed ?? Infinity) ? '#ef5350'
-                : value >= (entity.gaugeYellow ?? Infinity) ? '#ffca28'
-                : '#66bb6a';
-        }
-        const arc = 'M10 50 A40 40 0 0 1 90 50';
+        const toF = v => max <= min ? 0 : Math.min(1, Math.max(0, (v - min) / (max - min)));
+        const f = isNaN(value) ? 0 : toF(value);
+        const pt = (f, r) => [50 - r * Math.cos(f * Math.PI), 50 - r * Math.sin(f * Math.PI)].map(n => n.toFixed(2));
+        const arc = (a, b, r) => `M${pt(a, r)} A${r} ${r} 0 0 1 ${pt(b, r)}`;
+
+        // Sector bounds + colors: thresholds if set, otherwise four bands blue → red
+        const thresholds = [entity.gaugeYellow, entity.gaugeRed];
+        const bounds = thresholds.some(t => t !== undefined)
+            ? [0, ...thresholds.filter(t => t !== undefined).map(toF), 1]
+            : [0, 0.25, 0.5, 0.75, 1];
+        const colors = thresholds.some(t => t !== undefined)
+            ? ['#66bb6a', entity.gaugeYellow !== undefined && '#ffca28', entity.gaugeRed !== undefined && '#ef5350'].filter(Boolean)
+            : ['#42a5f5', '#66bb6a', '#ffca28', '#ef5350'];
+        // Gradient runs along x, so convert each sector's middle to its x offset on the arc
+        const stops = colors.map((c, i) => {
+            const mid = (bounds[i] + bounds[i + 1]) / 2;
+            return `<stop offset="${((1 - Math.cos(mid * Math.PI)) / 2).toFixed(3)}" stop-color="${c}"/>`;
+        }).join('');
+        const gap = 0.012;
+        // Sectors drawn dim in full, then bright up to the value
+        const sectorPaths = upTo => colors.map((_, i) => {
+            const a = bounds[i] + (i ? gap : 0);
+            const b = Math.min(bounds[i + 1] - (i < colors.length - 1 ? gap : 0), upTo);
+            return b > a ? `<path d="${arc(a, b, 40)}"/>` : '';
+        }).join('');
+        const ticks = Array.from({ length: 21 }, (_, i) =>
+            `<path d="M${pt(i / 20, 34)} L${pt(i / 20, i % 5 ? 32 : 30)}" class="${i % 5 ? '' : 'major'}"/>`
+        ).join('');
+        const gradId = `gauge-grad-${++gaugeSeq}`;
+
         const gauge = document.createElement('div');
         gauge.className = 'sensor-gauge';
         gauge.innerHTML = `
             <svg viewBox="0 0 100 56" aria-hidden="true">
-                <path d="${arc}" pathLength="100" class="gauge-track"/>
-                <path d="${arc}" pathLength="100" class="gauge-fill" stroke="${color}" stroke-dasharray="${pct} 100"/>
+                <defs><linearGradient id="${gradId}" gradientUnits="userSpaceOnUse" x1="10" y1="0" x2="90" y2="0">${stops}</linearGradient></defs>
+                <g class="gauge-sectors" stroke="url(#${gradId})">${sectorPaths(1)}</g>
+                <g class="gauge-sectors gauge-fill" stroke="url(#${gradId})">${sectorPaths(f)}</g>
+                <g class="gauge-ticks">${ticks}</g>
+                ${isNaN(value) ? '' : `<path class="gauge-pointer" d="M${pt(f, 45)} L${pt(f, 31)}"/><circle class="gauge-knob" cx="${pt(f, 40)[0]}" cy="${pt(f, 40)[1]}" r="2.6"/>`}
             </svg>`;
         gauge.appendChild(tempDisplay);
         tile.appendChild(gauge);
