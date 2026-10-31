@@ -2,6 +2,7 @@
     {
         "roomName": "Living Room",
         "headerTempEntity": "climate.living_room",
+        "headerBadges": ["weather.home", "light.living_room"],
         "screensaverWeather": "weather.forecast_home",
         "gridColumns": 2,
         "gridRows": 2,

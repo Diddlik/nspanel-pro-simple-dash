@@ -20,6 +20,7 @@
                     <div class="header-temp" id="headerTemp" style="display: none;" onclick="openHeaderClimateModal()">
                         <span class="header-temp-value" id="headerTempValue">—</span>
                     </div>
+                    <div class="header-badges" id="headerBadges"></div>
                 </div>
                 <div class="header-right">
                     <button class="phone-btn" id="phoneBtn" onclick="openVoiceMessageModal()" title="Voice Messages">
@@ -236,7 +237,7 @@
                             <input type="number" id="newEntityGaugeYellow" class="form-input" placeholder="Yellow from" aria-label="Gauge yellow threshold" style="width: 100px; padding: 6px 8px;">
                             <input type="number" id="newEntityGaugeRed" class="form-input" placeholder="Red from" aria-label="Gauge red threshold" style="width: 100px; padding: 6px 8px;">
                         </div>
-                        <small style="color: #888; font-size: 12px;">Below yellow = green. Leave both empty for a blue → red gradient.</small>
+                        <small style="color: #888; font-size: 12px;">Below yellow = green. Leave both empty for a plain blue gauge.</small>
                     </div>
                     <div id="entityOptWeather" style="display: none; flex-direction: column; gap: 8px;">
                         <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">

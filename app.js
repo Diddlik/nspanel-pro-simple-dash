@@ -95,7 +95,6 @@ function paginateEntities(items, gridColumns, gridRows) {
 let config = null;
 let globalConfig = null;
 let roomConfigs = [];
-let gaugeSeq = 0; // unique SVG gradient ids per rendered gauge
 let entityStates = {};
 let isConnected = false;
 let currentPage = 0;
@@ -226,6 +225,7 @@ async function saveConfig() {
         const roomConfig = {
             roomName: config.roomName,
             headerTempEntity: config.headerTempEntity,
+            headerBadges: config.headerBadges || [],
             screensaverWeather: config.screensaverWeather,
             wakeEntity: config.wakeEntity,
             gridColumns: config.gridColumns,
@@ -338,6 +338,7 @@ async function callService(domain, service, entityId) {
 const FALLBACK_POLL_MS = 10000;
 const SOCKET_PING_MS = 20000; // keep under nginx's 30 s proxy_read_timeout on older configs
 const NON_HA_DOMAINS = ['clock', 'assistant_command', 'spotify_playlist'];
+const TOGGLE_DOMAINS = ['switch', 'input_boolean', 'light', 'fan', 'group', 'automation'];
 // Same rule HA uses; subscribe_entities rejects the whole list if one id is malformed.
 const VALID_ENTITY_ID = /^(?!.+__)(?!_)[\da-z_]+(?<!_)\.(?!_)[\da-z_]+(?<!_)$/;
 
@@ -360,6 +361,7 @@ function getWatchedEntityIds() {
         .map(e => e.id)
         .filter(id => !NON_HA_DOMAINS.includes(id.split('.')[0]));
     if (config.headerTempEntity) ids.push(config.headerTempEntity);
+    ids.push(...(config.headerBadges || []));
     if (config.screensaverWeather) ids.push(config.screensaverWeather);
     if (config.wakeEntity) ids.push(config.wakeEntity);
     return [...new Set(ids)].filter(id => VALID_ENTITY_ID.test(id));
@@ -512,7 +514,7 @@ function applyEntityEvent(event) {
 
     for (const id of Object.keys(added)) {
         const s = added[id];
-        if (setEntityState(id, { entity_id: id, state: s.s, attributes: s.a || {} })) changed.add(id);
+        if (setEntityState(id, { entity_id: id, state: s.s, attributes: s.a || {}, last_changed: s.lc * 1000 })) changed.add(id);
     }
     for (const id of Object.keys(event.c || {})) {
         const current = entityStates[id];
@@ -522,7 +524,7 @@ function applyEntityEvent(event) {
         if (!('s' in plus) && !plus.a && !minus.length) continue; // only timestamps/context changed
         const attributes = { ...current.attributes, ...(plus.a || {}) };
         minus.forEach(key => delete attributes[key]);
-        entityStates[id] = { ...current, state: 's' in plus ? plus.s : current.state, attributes };
+        entityStates[id] = { ...current, state: 's' in plus ? plus.s : current.state, attributes, ...('lc' in plus && { last_changed: plus.lc * 1000 }) };
         changed.add(id);
     }
     for (const id of event.r || []) {
@@ -654,6 +656,7 @@ function flushPendingRenders() {
 
     ids.forEach(rerenderTiles);
     if (config.headerTempEntity && ids.has(config.headerTempEntity)) updateHeaderTemp();
+    if ((config.headerBadges || []).some(id => ids.has(id))) updateHeaderBadges();
     if ([...ids].some(id => id.startsWith('media_player.'))) rerenderMediaPage();
     if (currentClimateEntity && ids.has(currentClimateEntity)) openClimateModal(currentClimateEntity);
 }
@@ -791,6 +794,7 @@ function renderPages() {
 
     document.getElementById('roomName').textContent = config.roomName;
     updateHeaderTemp();
+    updateHeaderBadges();
     updateNowPlayingIndicator(mediaPlayers);
     updatePagePosition();
     scheduleClockTiles();
@@ -1285,6 +1289,44 @@ function updateHeaderTemp() {
     }
 }
 
+// Mini badges in the header: weather = icon + temp + condition (tap: forecast),
+// toggles = icon lit when on (tap: toggle), anything else = icon + value.
+function updateHeaderBadges() {
+    document.getElementById('headerBadges').replaceChildren(...(config.headerBadges || []).map(id => {
+        const state = entityStates[id];
+        const domain = id.split('.')[0];
+        const badge = document.createElement('button');
+        badge.className = 'header-badge';
+        badge.title = state?.attributes.friendly_name || id;
+        const icon = document.createElement('span');
+        icon.className = 'material-symbols-outlined';
+        icon.textContent = getEntityIcon(domain, id);
+        badge.appendChild(icon);
+        let text = '';
+
+        if (!state || state.state === 'unavailable') {
+            badge.classList.add('unavailable');
+        } else if (domain === 'weather') {
+            icon.textContent = WEATHER_ICONS[state.state] || 'cloud';
+            const t = state.attributes.temperature;
+            text = `${t !== undefined ? Math.round(t) + (state.attributes.temperature_unit || '°') + ' ' : ''}${formatWeatherCondition(state.state)}`;
+            badge.onclick = () => openWeatherForecast(id);
+        } else if (TOGGLE_DOMAINS.includes(domain)) {
+            badge.classList.toggle('on', state.state === 'on');
+            badge.onclick = () => handleTileClick(id, domain);
+        } else {
+            text = state.state + (state.attributes.unit_of_measurement || '');
+        }
+
+        if (text) {
+            const label = document.createElement('span');
+            label.textContent = text;
+            badge.appendChild(label);
+        }
+        return badge;
+    }));
+}
+
 function openHeaderClimateModal() {
     if (!config.headerTempEntity) return;
     
@@ -1352,10 +1394,18 @@ function createTile(entity, state) {
         tile.classList.add('no-action');
     }
 
-    // Add icon
+    // Top row: icon box + toggle switch (toggleable domains only)
+    const top = document.createElement('div');
+    top.className = 'tile-top';
     const icon = document.createElement('div');
     icon.className = 'tile-icon';
     icon.textContent = entity.icon || getEntityIcon(domain, entity.id);
+    top.appendChild(icon);
+    if (TOGGLE_DOMAINS.includes(domain)) {
+        const toggle = document.createElement('span');
+        toggle.className = 'tile-toggle';
+        top.appendChild(toggle);
+    }
 
     // Add content wrapper
     const content = document.createElement('div');
@@ -1366,16 +1416,22 @@ function createTile(entity, state) {
     label.textContent = entity.label;
 
     content.appendChild(label);
-    
-    // Only add state text if hideState is not true
+
+    // State + time of last change, e.g. "On · since 08:12"
     if (!entity.hideState) {
         const stateText = document.createElement('div');
         stateText.className = 'tile-state';
-        stateText.textContent = stateValue ? stateValue.toUpperCase() : 'UNKNOWN';
+        const value = document.createElement('b');
+        value.textContent = stateValue ? stateValue.charAt(0).toUpperCase() + stateValue.slice(1).replace(/_/g, ' ') : 'Unknown';
+        stateText.appendChild(value);
+        const changed = state?.last_changed && new Date(state.last_changed);
+        if (changed && !isNaN(changed)) {
+            stateText.append(` · since ${changed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
+        }
         content.appendChild(stateText);
     }
 
-    tile.appendChild(icon);
+    tile.appendChild(top);
     tile.appendChild(content);
 
     if (!isUnavailable && !entity.disableAction) {
@@ -1950,52 +2006,48 @@ function createSensorTile(entity, state) {
     tile.appendChild(label);
 
     if (entity.showGauge) {
-        // Semicircle (center 50,50, r 40): gradient sectors, tick marks, pointer at the value.
-        // f is the 0..1 fraction of the sweep, left → right.
+        // 270° arc (center 100,100, r 80): tinted zone track, value fill, ticks, knob.
+        // All arcs use pathLength 100, so dash values are percent of the sweep.
         const min = entity.gaugeMin ?? 0;
         const max = entity.gaugeMax ?? 100;
         const value = state ? parseFloat(state.state) : NaN;
-        const toF = v => max <= min ? 0 : Math.min(1, Math.max(0, (v - min) / (max - min)));
-        const f = isNaN(value) ? 0 : toF(value);
-        const pt = (f, r) => [50 - r * Math.cos(f * Math.PI), 50 - r * Math.sin(f * Math.PI)].map(n => n.toFixed(2));
-        const arc = (a, b, r) => `M${pt(a, r)} A${r} ${r} 0 0 1 ${pt(b, r)}`;
+        const pct = v => max <= min ? 0 : Math.min(100, Math.max(0, (v - min) / (max - min) * 100));
+        const f = isNaN(value) ? 0 : pct(value);
 
-        // Sector bounds + colors: thresholds if set, otherwise four bands blue → red
-        const thresholds = [entity.gaugeYellow, entity.gaugeRed];
-        const bounds = thresholds.some(t => t !== undefined)
-            ? [0, ...thresholds.filter(t => t !== undefined).map(toF), 1]
-            : [0, 0.25, 0.5, 0.75, 1];
-        const colors = thresholds.some(t => t !== undefined)
-            ? ['#66bb6a', entity.gaugeYellow !== undefined && '#ffca28', entity.gaugeRed !== undefined && '#ef5350'].filter(Boolean)
-            : ['#42a5f5', '#66bb6a', '#ffca28', '#ef5350'];
-        // Gradient runs along x, so convert each sector's middle to its x offset on the arc
-        const stops = colors.map((c, i) => {
-            const mid = (bounds[i] + bounds[i + 1]) / 2;
-            return `<stop offset="${((1 - Math.cos(mid * Math.PI)) / 2).toFixed(3)}" stop-color="${c}"/>`;
-        }).join('');
-        const gap = 0.012;
-        // Sectors drawn dim in full, then bright up to the value
-        const sectorPaths = upTo => colors.map((_, i) => {
-            const a = bounds[i] + (i ? gap : 0);
-            const b = Math.min(bounds[i + 1] - (i < colors.length - 1 ? gap : 0), upTo);
-            return b > a ? `<path d="${arc(a, b, 40)}"/>` : '';
-        }).join('');
-        const ticks = Array.from({ length: 21 }, (_, i) =>
-            `<path d="M${pt(i / 20, 34)} L${pt(i / 20, i % 5 ? 32 : 30)}" class="${i % 5 ? '' : 'major'}"/>`
+        // Zones: green → yellow → red from the thresholds, otherwise one blue zone
+        const hasZones = entity.gaugeYellow !== undefined || entity.gaugeRed !== undefined;
+        const zones = [{ from: 0, color: hasZones ? '#2E9E5B' : '#2F7FD8' }];
+        if (entity.gaugeYellow !== undefined) zones.push({ from: pct(entity.gaugeYellow), color: '#E08A00' });
+        if (entity.gaugeRed !== undefined) zones.push({ from: pct(entity.gaugeRed), color: '#E5484D' });
+        zones.forEach((z, i) => { z.to = zones[i + 1]?.from ?? 100; });
+        const color = zones.filter(z => f >= z.from).pop().color;
+
+        const ARC = 'M43.43 156.57 A80 80 0 1 1 156.57 156.57';
+        const ang = (135 + 2.7 * f) * Math.PI / 180;
+        const track = zones.map(z =>
+            `<path d="${ARC}" class="gauge-track" stroke="${z.color}" pathLength="100" stroke-dasharray="0 ${z.from} ${z.to - z.from} 100"/>`
         ).join('');
-        const gradId = `gauge-grad-${++gaugeSeq}`;
+
+        // Big integer part, smaller raised decimals, unit underneath — inside the SVG so it scales with the arc
+        const [int, dec] = isNaN(value) ? ['—'] : value.toFixed(entity.decimals ?? 0).split('.');
+        const unit = state?.attributes.unit_of_measurement || '';
 
         const gauge = document.createElement('div');
         gauge.className = 'sensor-gauge';
         gauge.innerHTML = `
-            <svg viewBox="0 0 100 56" aria-hidden="true">
-                <defs><linearGradient id="${gradId}" gradientUnits="userSpaceOnUse" x1="10" y1="0" x2="90" y2="0">${stops}</linearGradient></defs>
-                <g class="gauge-sectors" stroke="url(#${gradId})">${sectorPaths(1)}</g>
-                <g class="gauge-sectors gauge-fill" stroke="url(#${gradId})">${sectorPaths(f)}</g>
-                <g class="gauge-ticks">${ticks}</g>
-                ${isNaN(value) ? '' : `<path class="gauge-pointer" d="M${pt(f, 45)} L${pt(f, 31)}"/><circle class="gauge-knob" cx="${pt(f, 40)[0]}" cy="${pt(f, 40)[1]}" r="2.6"/>`}
+            <svg viewBox="0 0 200 180" aria-hidden="true">
+                ${track}
+                ${isNaN(value) ? '' : `<path d="${ARC}" class="gauge-fill" stroke="${color}" pathLength="100" stroke-dasharray="${Math.max(f, 0.01)} 100"/>`}
+                <path d="M54.75 145.25 A64 64 0 1 1 145.25 145.25" class="gauge-ticks" pathLength="100" stroke-dasharray="0.45 4.55"/>
+                ${isNaN(value) ? '' : `<circle class="gauge-knob" cx="${(100 + 80 * Math.cos(ang)).toFixed(2)}" cy="${(100 + 80 * Math.sin(ang)).toFixed(2)}" r="11" stroke="${color}"/>`}
+                <text x="40" y="176" class="gauge-limit">${min}</text>
+                <text x="160" y="176" class="gauge-limit">${max}</text>
+                <text x="100" y="98" class="gauge-number"><tspan class="gauge-int">${int}</tspan>${dec ? `<tspan class="gauge-dec" dy="-22">.${dec}</tspan>` : ''}</text>
+                <text x="100" y="124" class="gauge-unit"></text>
             </svg>`;
-        gauge.appendChild(tempDisplay);
+        gauge.querySelector('.gauge-unit').textContent = unit; // HA attribute: no innerHTML
+        tile.classList.add('has-gauge');
+        if (entity.tileColSpan > 1) tile.classList.add('full-row');
         tile.appendChild(gauge);
     } else {
         tile.appendChild(tempDisplay);
@@ -2778,10 +2830,14 @@ function showGlobalSettings() {
 
 let roomEditorSnapshot = null;
 
+// "weather.home, light.desk" → ['weather.home', 'light.desk']
+const parseEntityList = text => (text || '').split(/[\s,]+/).filter(Boolean);
+
 function getRoomEditorCurrentState() {
     return {
         roomName: document.getElementById('roomNameInput')?.value.trim() || '',
         headerTempEntity: document.getElementById('headerTempEntityInput')?.value.trim() || '',
+        headerBadges: parseEntityList(document.getElementById('headerBadgesInput')?.value),
         screensaverWeather: document.getElementById('screensaverWeatherInput')?.value.trim() || '',
         wakeEntity: document.getElementById('wakeEntityInput')?.value.trim() || '',
         gridColumns: parseInt(document.getElementById('gridColumnsInput')?.value) || 2,
@@ -2867,6 +2923,12 @@ function showRoomEditor(mode, roomIdx) {
             <label class="form-label">Header Temperature Entity (Optional)</label>
             <input type="text" class="form-input" id="headerTempEntityInput" placeholder="climate.bedroom or sensor.bedroom_temperature" value="${roomData.headerTempEntity || ''}">
             <small style="color: #888; font-size: 12px;">Shows temperature in header with controls for climate entities</small>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Header Badges (Optional)</label>
+            <input type="text" class="form-input" id="headerBadgesInput" placeholder="weather.home, light.desk, switch.fan" value="${(roomData.headerBadges || []).join(', ').replace(/[&"<>]/g, c => `&#${c.charCodeAt(0)};`)}">
+            <small style="color: #888; font-size: 12px;">Small chips next to the room name, comma-separated. Weather shows temp + condition, lights/switches toggle on tap, sensors show their value.</small>
         </div>
 
         <div class="form-group">
@@ -3004,6 +3066,7 @@ function showRoomEditor(mode, roomIdx) {
     roomEditorSnapshot = JSON.stringify({
         roomName: roomData.roomName || '',
         headerTempEntity: roomData.headerTempEntity || '',
+        headerBadges: roomData.headerBadges || [],
         screensaverWeather: roomData.screensaverWeather || '',
         wakeEntity: roomData.wakeEntity || '',
         gridColumns: roomData.gridColumns || 2,
@@ -3104,6 +3167,7 @@ async function saveGlobalSettings() {
 async function saveRoom(mode) {
     const roomName = document.getElementById('roomNameInput').value.trim();
     const headerTempEntity = document.getElementById('headerTempEntityInput').value.trim();
+    const headerBadges = parseEntityList(document.getElementById('headerBadgesInput').value);
     const screensaverWeather = document.getElementById('screensaverWeatherInput').value.trim();
     const wakeEntity = document.getElementById('wakeEntityInput').value.trim();
     const gridColumns = parseInt(document.getElementById('gridColumnsInput').value) || 2;
@@ -3120,6 +3184,12 @@ async function saveRoom(mode) {
         return;
     }
 
+    const badBadge = headerBadges.find(id => !VALID_ENTITY_ID.test(id));
+    if (badBadge) {
+        showError(`Header badge "${badBadge}" is not a valid entity ID, e.g. weather.home`);
+        return;
+    }
+
     if (!window.editingRoomData || !window.editingRoomData.entities || window.editingRoomData.entities.length === 0) {
         showError('Please add at least one entity');
         return;
@@ -3128,6 +3198,7 @@ async function saveRoom(mode) {
     const roomConfig = {
         roomName,
         headerTempEntity,
+        headerBadges,
         screensaverWeather,
         wakeEntity,
         gridColumns,
