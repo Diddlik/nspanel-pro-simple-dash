@@ -98,6 +98,7 @@ Open the editor by long-pressing (~2s) anywhere on the dashboard, or by visiting
 - **Grid columns/rows** — controls entities per page and tile sizing
 - **Header temperature entity** — a `climate` or `sensor` shown in the header with quick controls
 - **Header badges** — comma-separated entity IDs shown as small chips next to the room name: `weather` shows temp + condition (tap: forecast), lights/switches/fans toggle on tap, sensors show their value
+- **Media player entity** — playback target for Spotify playlists and assistant commands, no tile needed (otherwise the first media player tile is used). While it plays, a stop button shows next to the phone button
 - **Screensaver weather entity** — room-specific weather shown on the screensaver
 - **Wake entity** — e.g. a motion `binary_sensor`; hides the screensaver while it is `on` and keeps it from coming back
 - **Entities** — add, edit, reorder, remove

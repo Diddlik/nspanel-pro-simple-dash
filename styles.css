@@ -2073,6 +2073,11 @@ body {
     transform: scale(0.95);
 }
 
+:root .phone-btn.music-stop-btn { /* :root beats the light-theme phone-btn colors */
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
 .phone-badge {
     position: absolute;
     top: -4px;

@@ -226,6 +226,7 @@ async function saveConfig() {
             roomName: config.roomName,
             headerTempEntity: config.headerTempEntity,
             headerBadges: config.headerBadges || [],
+            mediaPlayerEntity: config.mediaPlayerEntity || '',
             screensaverWeather: config.screensaverWeather,
             wakeEntity: config.wakeEntity,
             gridColumns: config.gridColumns,
@@ -362,6 +363,7 @@ function getWatchedEntityIds() {
         .filter(id => !NON_HA_DOMAINS.includes(id.split('.')[0]));
     if (config.headerTempEntity) ids.push(config.headerTempEntity);
     ids.push(...(config.headerBadges || []));
+    if (config.mediaPlayerEntity) ids.push(config.mediaPlayerEntity);
     if (config.screensaverWeather) ids.push(config.screensaverWeather);
     if (config.wakeEntity) ids.push(config.wakeEntity);
     return [...new Set(ids)].filter(id => VALID_ENTITY_ID.test(id));
@@ -657,6 +659,7 @@ function flushPendingRenders() {
     ids.forEach(rerenderTiles);
     if (config.headerTempEntity && ids.has(config.headerTempEntity)) updateHeaderTemp();
     if ((config.headerBadges || []).some(id => ids.has(id))) updateHeaderBadges();
+    if (ids.has(getRoomMediaPlayer()?.id)) updateMusicStopButton();
     if ([...ids].some(id => id.startsWith('media_player.'))) rerenderMediaPage();
     if (currentClimateEntity && ids.has(currentClimateEntity)) openClimateModal(currentClimateEntity);
 }
@@ -795,6 +798,7 @@ function renderPages() {
     document.getElementById('roomName').textContent = config.roomName;
     updateHeaderTemp();
     updateHeaderBadges();
+    updateMusicStopButton();
     updateNowPlayingIndicator(mediaPlayers);
     updatePagePosition();
     scheduleClockTiles();
@@ -1516,26 +1520,44 @@ function createClockTile(entity) {
     return tile;
 }
 
+// The room's playback target: the media player from the room settings,
+// otherwise one of the media player tiles (Cast/other before Spotify).
+function getRoomMediaPlayer() {
+    if (config.mediaPlayerEntity) {
+        const id = config.mediaPlayerEntity;
+        return { id, label: entityStates[id]?.attributes.friendly_name || id };
+    }
+    const players = (config.entities || []).filter(e => e.id.startsWith('media_player.'));
+    return players.find(p => !p.id.includes('spotify')) || players[0] || null;
+}
+
+// Stop button next to the phone button while the room's player is playing
+function updateMusicStopButton() {
+    const player = getRoomMediaPlayer();
+    document.getElementById('musicStopBtn').style.display =
+        player && entityStates[player.id]?.state === 'playing' ? 'flex' : 'none';
+}
+
+async function stopRoomMusic() {
+    const player = getRoomMediaPlayer();
+    if (!player) return;
+    try {
+        await callHA('services/media_player/media_pause', 'POST', { entity_id: player.id });
+        refreshStatesSoon(1000);
+    } catch (error) {
+        console.error('Failed to stop music:', error);
+        showError(`Failed to stop music: ${error.message || 'unknown error'}`);
+    }
+}
+
 async function playSpotifyPlaylistOnRoomDevice(playlistUrl) {
-    // Find media players in this room
-    const mediaPlayers = config.entities.filter(e => e.id.startsWith('media_player.'));
-    
-    if (mediaPlayers.length === 0) {
-        showError('No media player configured in this room.');
+    const targetDevice = getRoomMediaPlayer();
+    if (!targetDevice) {
+        showError('No media player configured in this room (Room settings → Media Player Entity).');
         return;
     }
 
-    // Find Spotify entity and Cast/other devices
-    const spotifyEntity = mediaPlayers.find(mp => mp.id.includes('spotify'));
-    const castDevices = mediaPlayers.filter(mp => !mp.id.includes('spotify'));
-    const targetDevice = castDevices.length > 0 ? castDevices[0] : mediaPlayers[0];
-    
-    console.log('Playing Spotify playlist:', {
-        playlistUrl,
-        spotifyEntity: spotifyEntity?.id,
-        targetDevice: targetDevice.id,
-        targetLabel: targetDevice.label
-    });
+    console.log('Playing Spotify playlist:', { playlistUrl, targetDevice: targetDevice.id });
 
     try {
         // Convert URL to Spotify URI if needed
@@ -1583,24 +1605,20 @@ async function playSpotifyPlaylistOnRoomDevice(playlistUrl) {
 }
 
 async function sendAssistantCommand(command) {
-    // Find the first media player in this room
-    const mediaPlayers = config.entities.filter(e => e.id.startsWith('media_player.'));
-    
-    if (mediaPlayers.length === 0) {
-        showError('No media player configured in this room.');
+    const player = getRoomMediaPlayer();
+    if (!player) {
+        showError('No media player configured in this room (Room settings → Media Player Entity).');
         return;
     }
-
-    const targetMediaPlayer = mediaPlayers[0].id;
 
     try {
         // Use Google Assistant SDK send_text_command service
         await callHA('services/google_assistant_sdk/send_text_command', 'POST', {
             command: command,
-            media_player: targetMediaPlayer
+            media_player: player.id
         });
-        
-        showError(`Sent to ${mediaPlayers[0].label}: "${command}"`);
+
+        showError(`Sent to ${player.label}: "${command}"`);
         refreshStatesSoon(1000);
     } catch (error) {
         console.error('Failed to send assistant command:', error);
@@ -2838,6 +2856,7 @@ function getRoomEditorCurrentState() {
         roomName: document.getElementById('roomNameInput')?.value.trim() || '',
         headerTempEntity: document.getElementById('headerTempEntityInput')?.value.trim() || '',
         headerBadges: parseEntityList(document.getElementById('headerBadgesInput')?.value),
+        mediaPlayerEntity: document.getElementById('mediaPlayerEntityInput')?.value.trim() || '',
         screensaverWeather: document.getElementById('screensaverWeatherInput')?.value.trim() || '',
         wakeEntity: document.getElementById('wakeEntityInput')?.value.trim() || '',
         gridColumns: parseInt(document.getElementById('gridColumnsInput')?.value) || 2,
@@ -2929,6 +2948,12 @@ function showRoomEditor(mode, roomIdx) {
             <label class="form-label">Header Badges (Optional)</label>
             <input type="text" class="form-input" id="headerBadgesInput" placeholder="weather.home, light.desk, switch.fan" value="${(roomData.headerBadges || []).join(', ').replace(/[&"<>]/g, c => `&#${c.charCodeAt(0)};`)}">
             <small style="color: #888; font-size: 12px;">Small chips next to the room name, comma-separated. Weather shows temp + condition, lights/switches toggle on tap, sensors show their value.</small>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Media Player Entity (Optional)</label>
+            <input type="text" class="form-input" id="mediaPlayerEntityInput" placeholder="media_player.living_room_speaker" value="${(roomData.mediaPlayerEntity || '').replace(/[&"<>]/g, c => `&#${c.charCodeAt(0)};`)}">
+            <small style="color: #888; font-size: 12px;">Plays Spotify playlists and assistant commands without needing a tile. A stop button appears in the header while it plays.</small>
         </div>
 
         <div class="form-group">
@@ -3067,6 +3092,7 @@ function showRoomEditor(mode, roomIdx) {
         roomName: roomData.roomName || '',
         headerTempEntity: roomData.headerTempEntity || '',
         headerBadges: roomData.headerBadges || [],
+        mediaPlayerEntity: roomData.mediaPlayerEntity || '',
         screensaverWeather: roomData.screensaverWeather || '',
         wakeEntity: roomData.wakeEntity || '',
         gridColumns: roomData.gridColumns || 2,
@@ -3168,6 +3194,7 @@ async function saveRoom(mode) {
     const roomName = document.getElementById('roomNameInput').value.trim();
     const headerTempEntity = document.getElementById('headerTempEntityInput').value.trim();
     const headerBadges = parseEntityList(document.getElementById('headerBadgesInput').value);
+    const mediaPlayerEntity = document.getElementById('mediaPlayerEntityInput').value.trim();
     const screensaverWeather = document.getElementById('screensaverWeatherInput').value.trim();
     const wakeEntity = document.getElementById('wakeEntityInput').value.trim();
     const gridColumns = parseInt(document.getElementById('gridColumnsInput').value) || 2;
@@ -3190,6 +3217,11 @@ async function saveRoom(mode) {
         return;
     }
 
+    if (mediaPlayerEntity && !(VALID_ENTITY_ID.test(mediaPlayerEntity) && mediaPlayerEntity.startsWith('media_player.'))) {
+        showError('Media player must be a media_player entity, e.g. media_player.living_room_speaker');
+        return;
+    }
+
     if (!window.editingRoomData || !window.editingRoomData.entities || window.editingRoomData.entities.length === 0) {
         showError('Please add at least one entity');
         return;
@@ -3199,6 +3231,7 @@ async function saveRoom(mode) {
         roomName,
         headerTempEntity,
         headerBadges,
+        mediaPlayerEntity,
         screensaverWeather,
         wakeEntity,
         gridColumns,
